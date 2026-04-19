@@ -1,4 +1,5 @@
 import { defineConfig } from "@rxweave/cli"
+import { SystemAgentHeartbeat } from "@rxweave/schema"
 import { FileStore } from "@rxweave/store-file"
 import { CanvasNodeCreated, SpeechTranscribed, TaskCreated } from "./schemas.js"
 import { counterAgent } from "./agents/counter.js"
@@ -7,6 +8,11 @@ import { taskFromSpeechAgent } from "./agents/task-from-speech.js"
 
 export default defineConfig({
   store: FileStore.Live({ path: ".rxweave/events.jsonl" }),
-  schemas: [CanvasNodeCreated, SpeechTranscribed, TaskCreated],
+  schemas: [
+    CanvasNodeCreated,
+    SpeechTranscribed,
+    TaskCreated,
+    SystemAgentHeartbeat,
+  ],
   agents: [counterAgent, echoAgent, taskFromSpeechAgent],
 })

@@ -1,4 +1,5 @@
 import {
+  Clock,
   Duration,
   Effect,
   FiberMap,
@@ -108,6 +109,37 @@ export const supervise = (
           Effect.onExit(() => flushCursorFor(agent.id)),
         )
       })
+
+    // Heartbeat emitter — publishes `system.agent.heartbeat` every 10s
+    // per live agent so external observers (cloud dashboard agents view,
+    // Plan B Task 10) have something to render. `Clock.currentTimeMillis`
+    // keeps this deterministic under `TestClock`. Failures are swallowed
+    // (registry digest mismatches, transient store errors, …) — one bad
+    // emit must not kill the fiber; heartbeats are best-effort telemetry.
+    yield* Effect.forkScoped(
+      Effect.forever(
+        Effect.sleep(Duration.seconds(10)).pipe(
+          Effect.zipRight(
+            Effect.gen(function* () {
+              for (const [agentId, ctx] of cursorCtx.entries()) {
+                const cursor = yield* Ref.get(ctx.pendingCursor)
+                const timestamp = yield* Clock.currentTimeMillis
+                yield* store
+                  .append([
+                    {
+                      type: "system.agent.heartbeat",
+                      actor: agentId as never,
+                      source: "system",
+                      payload: { agentId, cursor, timestamp },
+                    },
+                  ])
+                  .pipe(Effect.catchAll(() => Effect.void))
+              }
+            }),
+          ),
+        ),
+      ),
+    )
 
     for (const agent of agents) {
       yield* FiberMap.run(fibers, agent.id, runOne(agent))
