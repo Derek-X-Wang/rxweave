@@ -7,8 +7,13 @@ import { MemoryStore } from "@rxweave/store-memory"
 import { rootCommand } from "../src/Main.js"
 import { Output } from "../src/Output.js"
 import { emitCommand } from "../src/commands/emit.js"
+import { streamCommand } from "../src/commands/stream.js"
+import { getCommand } from "../src/commands/get.js"
+import { inspectCommand } from "../src/commands/inspect.js"
 
-const root = rootCommand.pipe(Command.withSubcommands([emitCommand]))
+const root = rootCommand.pipe(
+  Command.withSubcommands([emitCommand, streamCommand, getCommand, inspectCommand]),
+)
 
 const cli = Command.run(root, { name: "rxweave", version: "0.1.0" })
 
