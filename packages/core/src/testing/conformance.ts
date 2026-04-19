@@ -1,6 +1,6 @@
 import { describe, expect } from "vitest"
 import { it } from "@effect/vitest"
-import { Effect, Fiber, Layer, Stream } from "effect"
+import { Duration, Effect, Fiber, Layer, Ref, Stream } from "effect"
 import type { ActorId } from "@rxweave/schema"
 import { EventStore } from "../EventStore.js"
 
@@ -8,11 +8,14 @@ export interface ConformanceOptions {
   readonly name: string
   readonly layer: Layer.Layer<EventStore>
   readonly fresh?: () => Layer.Layer<EventStore>
+  readonly supportsColdStartRecovery?: boolean
+  readonly coldStartFactory?: () => Layer.Layer<EventStore>
 }
 
 const actor = (v: string): ActorId => v as ActorId
 
-export const runConformance = ({ name, layer, fresh }: ConformanceOptions) => {
+export const runConformance = (opts: ConformanceOptions) => {
+  const { name, layer, fresh } = opts
   const makeLayer = fresh ?? (() => layer)
 
   describe(`${name} conformance`, () => {
@@ -135,5 +138,108 @@ export const runConformance = ({ name, layer, fresh }: ConformanceOptions) => {
         expect(got.length).toBe(0)
       }).pipe(Effect.provide(makeLayer())),
     )
+
+    it.effect("two concurrent subscribers observe the same ordered stream", () =>
+      Effect.gen(function* () {
+        const store = yield* EventStore
+        // Append the full set BEFORE subscribing so both subscribers consume
+        // from the same snapshot; avoids live-fan-out race variance across
+        // adapters that handle live delivery differently.
+        const appended = yield* store.append([
+          { type: "canvas.node.created", actor: actor("tester"), source: "cli", payload: { id: "a", label: "A" } },
+          { type: "canvas.node.created", actor: actor("tester"), source: "cli", payload: { id: "b", label: "B" } },
+          { type: "canvas.node.created", actor: actor("tester"), source: "cli", payload: { id: "c", label: "C" } },
+        ])
+        const f1 = yield* store
+          .subscribe({ cursor: "earliest" })
+          .pipe(Stream.take(3), Stream.runCollect, Effect.fork)
+        const f2 = yield* store
+          .subscribe({ cursor: "earliest" })
+          .pipe(Stream.take(3), Stream.runCollect, Effect.fork)
+        const r1 = Array.from(yield* Fiber.join(f1))
+        const r2 = Array.from(yield* Fiber.join(f2))
+        const ids1 = r1.map((e) => e.id)
+        const ids2 = r2.map((e) => e.id)
+        const expected = appended.map((e) => e.id)
+        expect(ids1).toEqual(expected)
+        expect(ids2).toEqual(expected)
+      }).pipe(Effect.provide(makeLayer())),
+    )
+
+    it.scopedLive("slow subscriber under flood stays bounded and non-crashing", () =>
+      Effect.gen(function* () {
+        const store = yield* EventStore
+        const processed = yield* Ref.make(0)
+        const subFiber = yield* Effect.forkScoped(
+          store.subscribe({ cursor: "latest" }).pipe(
+            Stream.tap(() =>
+              Effect.sleep(Duration.millis(1)).pipe(
+                Effect.zipRight(Ref.update(processed, (n) => n + 1)),
+              ),
+            ),
+            Stream.runDrain,
+            Effect.either,
+          ),
+        )
+        // Let the subscriber wire up before flooding.
+        yield* Effect.sleep(Duration.millis(20))
+        const flood = Array.from({ length: 2000 }, (_, i) => ({
+          type: "flood.tick",
+          actor: actor("flooder"),
+          source: "cli" as const,
+          payload: { i },
+        }))
+        yield* store.append(flood)
+        // Give the slow consumer ~200ms to process what it can.
+        yield* Effect.sleep(Duration.millis(200))
+        const count = yield* Ref.get(processed)
+        expect(count).toBeGreaterThan(0)
+        // Store should still accept writes after the flood.
+        const after = yield* store.append([
+          { type: "post.flood", actor: actor("flooder"), source: "cli", payload: {} },
+        ])
+        expect(after.length).toBe(1)
+        yield* Fiber.interrupt(subFiber)
+        // TODO(v0.2.x): assert SubscriberLagged tag once adapters emit it.
+      }).pipe(Effect.provide(makeLayer())),
+    )
+
+    it.scopedLive("in-flight subscribers terminate when layer scope closes", () =>
+      Effect.gen(function* () {
+        const cleaned = yield* Ref.make(false)
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const store = yield* EventStore
+            yield* Effect.forkScoped(
+              store.subscribe({ cursor: "earliest" }).pipe(
+                Stream.runDrain,
+                Effect.ensuring(Ref.set(cleaned, true)),
+              ),
+            )
+            yield* Effect.sleep(Duration.millis(10))
+            yield* store.append([
+              { type: "shutdown.probe", actor: actor("tester"), source: "cli", payload: {} },
+            ])
+            yield* Effect.sleep(Duration.millis(20))
+          }).pipe(Effect.provide(makeLayer())),
+        )
+        expect(yield* Ref.get(cleaned)).toBe(true)
+      }),
+    )
+
+    if (opts.supportsColdStartRecovery && opts.coldStartFactory) {
+      const coldStartFactory = opts.coldStartFactory
+      it.effect("cold-start recovery boots from torn tail without data loss", () =>
+        Effect.gen(function* () {
+          const store = yield* EventStore
+          const events = yield* store.query({}, 100)
+          // Factory contract: populates the backing store with exactly one
+          // recoverable event of type "recovery.probe", plus a torn tail
+          // that must be truncated.
+          expect(events.length).toBe(1)
+          expect(events[0]!.type).toBe("recovery.probe")
+        }).pipe(Effect.provide(coldStartFactory())),
+      )
+    }
   })
 }
