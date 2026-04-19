@@ -28,12 +28,21 @@ export interface ConformanceOptions {
    * accepts writes after the flood) is unchanged under a smaller N.
    */
   readonly floodSize?: number
+  /**
+   * Post-flood wait before asserting `processed > 0`. Defaults to 200ms for
+   * in-process adapters where live delivery is synchronous. Polling-based
+   * adapters (e.g. cloud's Subscribe polls at ~1s) need at least one poll
+   * cycle past the flood append — pass 3000+ ms so a poll fires after the
+   * flood completes. Without this, `count` reads 0 (test subscribes, polls
+   * once seeing nothing, flood happens, test ends before next poll fires).
+   */
+  readonly floodWaitMs?: number
 }
 
 const actor = (v: string): ActorId => v as ActorId
 
 export const runConformance = (opts: ConformanceOptions) => {
-  const { name, layer, fresh, resetBetweenTests, floodSize = 2000 } = opts
+  const { name, layer, fresh, resetBetweenTests, floodSize = 2000, floodWaitMs = 200 } = opts
   const makeLayer = fresh ?? (() => layer)
 
   describe(`${name} conformance`, () => {
@@ -218,8 +227,9 @@ export const runConformance = (opts: ConformanceOptions) => {
             payload: { i },
           }))
           yield* store.append(flood)
-          // Give the slow consumer ~200ms to process what it can.
-          yield* Effect.sleep(Duration.millis(200))
+          // Give the slow consumer time to process what it can. For polling
+          // adapters this must span at least one poll cycle past the flood.
+          yield* Effect.sleep(Duration.millis(floodWaitMs))
           const count = yield* Ref.get(processed)
           expect(count).toBeGreaterThan(0)
           // Store should still accept writes after the flood.

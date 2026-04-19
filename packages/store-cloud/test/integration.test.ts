@@ -68,6 +68,10 @@ if (url && token) {
     // the slow-subscriber-under-flood invariants (subscriber processed
     // > 0, store accepts writes after flood) within ~10s of network I/O.
     floodSize: 200,
+    // Subscribe polls at ~1s; a 200ms post-flood wait lands between polls
+    // so the subscriber sees zero events. 3000ms guarantees at least one
+    // poll cycle fires after the flood completes.
+    floodWaitMs: 3000,
   })
 } else {
   describe("CloudStore integration (set RXWEAVE_CLOUD_URL + RXWEAVE_TOKEN)", () => {
