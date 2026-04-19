@@ -44,6 +44,22 @@ export class RxWeaveRpc extends RpcGroup.make(
     success: Schema.Array(EventEnvelope),
     error: QueryWireError,
   }),
+  Rpc.make("QueryAfter", {
+    // Server-side cursor-paged query — mirrors `Query` but pushes the
+    // exclusive-cursor predicate to the index instead of local-filtering.
+    // Introduced for v0.2.1: CloudStore's client-side `queryAfter` was
+    // doing `Query + local filter`, which silently returned [] once the
+    // tenant held more than `limit` events older than the cursor (the
+    // server page never reached rows past the cursor). See `queryEventsAfter`
+    // in cloud/convex/rxweave.ts for the server-side index predicate.
+    payload: Schema.Struct({
+      cursor: Cursor,
+      filter: Filter,
+      limit: Schema.Number,
+    }),
+    success: Schema.Array(EventEnvelope),
+    error: QueryWireError,
+  }),
   Rpc.make("RegistrySyncDiff", {
     payload: Schema.Struct({ clientDigest: Schema.String }),
     success: Schema.Struct({

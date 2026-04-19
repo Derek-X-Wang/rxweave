@@ -1,5 +1,5 @@
 import { describe, it } from "vitest"
-import { Layer } from "effect"
+import { Effect, Layer } from "effect"
 import { EventRegistry } from "@rxweave/schema"
 import { runConformance } from "@rxweave/core/testing"
 import { CloudStore } from "../src/index.js"
@@ -31,7 +31,40 @@ if (url && token) {
     CloudStore.Live({ url: capturedUrl, token: () => capturedToken }).pipe(
       Layer.provide(EventRegistry.Live),
     )
-  runConformance({ name: "CloudStore (integration)", layer: make(), fresh: make })
+
+  // `/rxweave/rpc` and the reset endpoint share a base — derive the
+  // reset URL by stripping the `/rxweave/rpc` suffix (handles both with
+  // and without a trailing slash).
+  const resetUrl =
+    capturedUrl.replace(/\/rxweave\/rpc\/?$/, "") + "/rxweave/test/reset"
+
+  // Drain the tenant between cases. `wipeTenantEvents` on the server
+  // deletes up to 1000 rows per call and returns `hasMore`; we loop
+  // until drained with a sanity cap so a bug in the server-side
+  // pagination can't spin forever. 100 × 1000 = 100k rows, well beyond
+  // anything the suite can pollute a tenant with.
+  const resetBetweenTests = Effect.gen(function* () {
+    for (let i = 0; i < 100; i++) {
+      const res = yield* Effect.promise(() =>
+        fetch(resetUrl, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${capturedToken}` },
+        }),
+      )
+      const body = (yield* Effect.promise(() => res.json())) as {
+        readonly deleted: number
+        readonly hasMore: boolean
+      }
+      if (!body.hasMore) break
+    }
+  })
+
+  runConformance({
+    name: "CloudStore (integration)",
+    layer: make(),
+    fresh: make,
+    resetBetweenTests,
+  })
 } else {
   describe("CloudStore integration (set RXWEAVE_CLOUD_URL + RXWEAVE_TOKEN)", () => {
     it.skip("skipped — env vars not set", () => undefined)

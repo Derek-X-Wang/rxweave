@@ -88,6 +88,9 @@ export interface CloudRpcClient {
   readonly Query: (
     input: { readonly filter: Filter; readonly limit: number },
   ) => Effect.Effect<ReadonlyArray<EventEnvelope>, unknown, never>
+  readonly QueryAfter: (
+    input: { readonly cursor: Cursor; readonly filter: Filter; readonly limit: number },
+  ) => Effect.Effect<ReadonlyArray<EventEnvelope>, unknown, never>
 }
 
 /**
@@ -174,25 +177,15 @@ export const makeCloudEventStore = (
           .Query({ filter, limit })
           .pipe(Effect.mapError(() => new QueryError({ reason: "cloud-query" }))),
 
-      // Client-side `queryAfter` — the v0.2.1 wire protocol does not (yet)
-      // expose a dedicated `QueryAfter` RPC, so we fetch via `Query` and
-      // filter by id locally. For the cloud adapter this is acceptable
-      // because the server's Subscribe handler is the hot path for
-      // cursor-paged streaming; `queryAfter` here is mostly a typecheck
-      // obligation for CloudStore to conform to the EventStore tag.
+      // Delegates straight to the server's `QueryAfter` RPC so the
+      // exclusive-cursor predicate reaches the index. The earlier
+      // `Query + local filter` shortcut silently returned [] once the
+      // tenant held more than `limit` events older than the cursor —
+      // the server page never saw rows past the cursor at all.
       queryAfter: (cursor, filter, limit) =>
-        cursor === "latest"
-          ? Effect.succeed([])
-          : client
-              .Query({ filter, limit })
-              .pipe(
-                Effect.map((rows) =>
-                  cursor === "earliest"
-                    ? rows
-                    : rows.filter((e) => e.id > cursor),
-                ),
-                Effect.mapError(() => new QueryError({ reason: "cloud-query" })),
-              ),
+        client
+          .QueryAfter({ cursor, filter, limit })
+          .pipe(Effect.mapError(() => new QueryError({ reason: "cloud-query" }))),
 
       latestCursor: Ref.get(lastAppended),
     }

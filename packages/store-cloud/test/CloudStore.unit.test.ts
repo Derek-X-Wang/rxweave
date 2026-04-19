@@ -268,6 +268,7 @@ describe("CloudStore (unit)", () => {
         Subscribe: () => Stream.empty,
         GetById: (_input) => Effect.succeed(fakeEnvelope as never),
         Query: (_input) => Effect.succeed([]),
+        QueryAfter: (_input) => Effect.succeed([]),
       }
 
       const program = Effect.gen(function* () {
@@ -304,6 +305,7 @@ describe("CloudStore (unit)", () => {
         Subscribe: () => Stream.empty,
         GetById: (_input) => Effect.fail(new Error("unused")),
         Query: (_input) => Effect.succeed([]),
+        QueryAfter: (_input) => Effect.succeed([]),
       }
 
       const program = Effect.gen(function* () {
@@ -338,6 +340,7 @@ describe("CloudStore (unit)", () => {
         },
         GetById: (_input) => Effect.fail(new Error("unused")),
         Query: (_input) => Effect.succeed([]),
+        QueryAfter: (_input) => Effect.succeed([]),
       }
 
       const program = Effect.gen(function* () {
@@ -367,6 +370,7 @@ describe("CloudStore (unit)", () => {
         },
         GetById: (_input) => Effect.fail(new Error("unused")),
         Query: (_input) => Effect.succeed([]),
+        QueryAfter: (_input) => Effect.succeed([]),
       }
 
       const program = Effect.gen(function* () {

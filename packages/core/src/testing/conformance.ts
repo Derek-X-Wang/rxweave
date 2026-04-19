@@ -1,4 +1,4 @@
-import { describe, expect } from "vitest"
+import { beforeEach, describe, expect } from "vitest"
 import { it } from "@effect/vitest"
 import { Duration, Effect, Fiber, Layer, Ref, Stream } from "effect"
 import type { ActorId } from "@rxweave/schema"
@@ -9,15 +9,34 @@ export interface ConformanceOptions {
   readonly layer: Layer.Layer<EventStore>
   readonly fresh?: () => Layer.Layer<EventStore>
   readonly coldStartFactory?: () => Layer.Layer<EventStore>
+  /**
+   * Optional per-test cleanup, run via `beforeEach` before each conformance
+   * case. Primarily exists for integration runs against a shared remote
+   * deployment (see `store-cloud` integration test), where state from one
+   * case can poison the next: e.g. a prior `slow subscriber under flood`
+   * run leaves 2000+ events in the tenant, and `queryAfter(eventId)` reads
+   * against a fresh tenant need a clean slate to match the in-memory
+   * baseline. No-op for stores that are torn down and recreated per-test.
+   */
+  readonly resetBetweenTests?: Effect.Effect<void, never, never>
 }
 
 const actor = (v: string): ActorId => v as ActorId
 
 export const runConformance = (opts: ConformanceOptions) => {
-  const { name, layer, fresh } = opts
+  const { name, layer, fresh, resetBetweenTests } = opts
   const makeLayer = fresh ?? (() => layer)
 
   describe(`${name} conformance`, () => {
+    if (resetBetweenTests) {
+      // Vitest's `beforeEach` takes an async fn; `Effect.runPromise` bridges
+      // the Effect into that shape. The hook runs for every `it.*` below,
+      // including the cold-start case (which is idempotent under reset).
+      beforeEach(async () => {
+        await Effect.runPromise(resetBetweenTests)
+      })
+    }
+
     it.effect("append + subscribe round-trips a single event", () =>
       Effect.gen(function* () {
         const store = yield* EventStore
@@ -165,41 +184,49 @@ export const runConformance = (opts: ConformanceOptions) => {
       }).pipe(Effect.provide(makeLayer())),
     )
 
-    it.scopedLive("slow subscriber under flood stays bounded and non-crashing", () =>
-      Effect.gen(function* () {
-        const store = yield* EventStore
-        const processed = yield* Ref.make(0)
-        const subFiber = yield* Effect.forkScoped(
-          store.subscribe({ cursor: "latest" }).pipe(
-            Stream.tap(() =>
-              Effect.sleep(Duration.millis(1)).pipe(
-                Effect.zipRight(Ref.update(processed, (n) => n + 1)),
+    it.scopedLive(
+      "slow subscriber under flood stays bounded and non-crashing",
+      () =>
+        Effect.gen(function* () {
+          const store = yield* EventStore
+          const processed = yield* Ref.make(0)
+          const subFiber = yield* Effect.forkScoped(
+            store.subscribe({ cursor: "latest" }).pipe(
+              Stream.tap(() =>
+                Effect.sleep(Duration.millis(1)).pipe(
+                  Effect.zipRight(Ref.update(processed, (n) => n + 1)),
+                ),
               ),
+              Stream.runDrain,
             ),
-            Stream.runDrain,
-          ),
-        )
-        // Let the subscriber wire up before flooding.
-        yield* Effect.sleep(Duration.millis(20))
-        const flood = Array.from({ length: 2000 }, (_, i) => ({
-          type: "flood.tick",
-          actor: actor("flooder"),
-          source: "cli" as const,
-          payload: { i },
-        }))
-        yield* store.append(flood)
-        // Give the slow consumer ~200ms to process what it can.
-        yield* Effect.sleep(Duration.millis(200))
-        const count = yield* Ref.get(processed)
-        expect(count).toBeGreaterThan(0)
-        // Store should still accept writes after the flood.
-        const after = yield* store.append([
-          { type: "post.flood", actor: actor("flooder"), source: "cli", payload: {} },
-        ])
-        expect(after.length).toBe(1)
-        yield* Fiber.interrupt(subFiber)
-        // TODO(v0.2.x): assert SubscriberLagged tag once adapters emit it.
-      }).pipe(Effect.provide(makeLayer())),
+          )
+          // Let the subscriber wire up before flooding.
+          yield* Effect.sleep(Duration.millis(20))
+          const flood = Array.from({ length: 2000 }, (_, i) => ({
+            type: "flood.tick",
+            actor: actor("flooder"),
+            source: "cli" as const,
+            payload: { i },
+          }))
+          yield* store.append(flood)
+          // Give the slow consumer ~200ms to process what it can.
+          yield* Effect.sleep(Duration.millis(200))
+          const count = yield* Ref.get(processed)
+          expect(count).toBeGreaterThan(0)
+          // Store should still accept writes after the flood.
+          const after = yield* store.append([
+            { type: "post.flood", actor: actor("flooder"), source: "cli", payload: {} },
+          ])
+          expect(after.length).toBe(1)
+          yield* Fiber.interrupt(subFiber)
+          // TODO(v0.2.x): assert SubscriberLagged tag once adapters emit it.
+        }).pipe(Effect.provide(makeLayer())),
+      // 15s timeout (default 5s) — remote cloud adapter does 2000 real
+      // network round-trips here, which blows past vitest's default. The
+      // assertion logic is unchanged; only the clock budget moves. Scoped
+      // to this single `it.scopedLive` so the rest of the suite still
+      // benefits from fast-fail defaults.
+      15000,
     )
 
     it.scopedLive("in-flight subscribers terminate when layer scope closes", () =>
