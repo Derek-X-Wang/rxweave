@@ -1,0 +1,29 @@
+{
+  "name": "@rxweave/store-memory",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
+  "files": ["dist"],
+  "engines": { "node": ">=22", "bun": ">=1.1" },
+  "scripts": {
+    "build": "bun build ./src/index.ts --target=node --format=esm --outdir=dist --splitting && tsc --emitDeclarationOnly --outDir dist",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "lint": "oxlint src test"
+  },
+  "dependencies": {
+    "effect": "^3.11.0",
+    "minimatch": "^10.0.0",
+    "@rxweave/schema": "workspace:*",
+    "@rxweave/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/minimatch": "^5.1.2",
+    "typescript": "^5.5.4",
+    "@types/node": "^22.10.0",
+    "vitest": "^2.1.0",
+    "@effect/vitest": "^0.17.0"
+  }
+}

@@ -3,6 +3,7 @@
   "references": [
     { "path": "./packages/schema" },
     { "path": "./packages/core" },
-    { "path": "./packages/protocol" }
+    { "path": "./packages/protocol" },
+    { "path": "./packages/store-memory" }
   ]
 }
