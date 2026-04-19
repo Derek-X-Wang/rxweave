@@ -5,6 +5,7 @@ import { EventStore } from "@rxweave/core"
 import { EventRegistry, SystemAgentHeartbeat, defineEvent } from "@rxweave/schema"
 import { Schema } from "effect"
 import {
+  cachedToken,
   CloudStore,
   type CloudRpcClient,
   isRetryable,
@@ -59,6 +60,58 @@ describe("CloudStore (unit)", () => {
     Effect.sync(() => {
       const mw = withBearerToken(() => "t")
       expect(typeof mw).toBe("function")
+    }),
+  )
+
+  // v0.2.1: cachedToken wraps a TokenProvider in a TTL cache so the
+  // underlying provider is called at most once per TTL window.
+  it.effect("cachedToken reuses the cached value within TTL", () =>
+    Effect.promise(async () => {
+      let calls = 0
+      const provider = () => {
+        calls += 1
+        return `t-${calls}`
+      }
+
+      // Pin `Date.now()` so we can control TTL expiry deterministically.
+      // We advance `now` between calls to simulate wall-clock progress.
+      const real = Date.now
+      let now = 1_000_000_000_000
+      Date.now = () => now
+      try {
+        const cached = cachedToken(provider, 300_000)
+
+        const first = await cached()
+        expect(first).toBe("t-1")
+        expect(calls).toBe(1)
+
+        // Within TTL → no new call to the underlying provider.
+        now += 299_999
+        const second = await cached()
+        expect(second).toBe("t-1")
+        expect(calls).toBe(1)
+
+        // Just past TTL → underlying provider fires again.
+        now += 2
+        const third = await cached()
+        expect(third).toBe("t-2")
+        expect(calls).toBe(2)
+
+        // invalidate() clears the cache unconditionally.
+        cached.invalidate()
+        const fourth = await cached()
+        expect(fourth).toBe("t-3")
+        expect(calls).toBe(3)
+      } finally {
+        Date.now = real
+      }
+    }),
+  )
+
+  it.effect("cachedToken exposes an invalidate() function", () =>
+    Effect.sync(() => {
+      const cached = cachedToken(() => "x")
+      expect(typeof cached.invalidate).toBe("function")
     }),
   )
 

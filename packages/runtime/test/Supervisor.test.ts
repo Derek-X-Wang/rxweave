@@ -90,32 +90,91 @@ describe("supervise", () => {
         100,
       )
       expect(hb.length).toBe(2)
-      const ids = hb
-        .map((e) => (e.payload as { agentId: string }).agentId)
-        .sort()
+      // `event.actor` is the canonical agent identity — v0.2.1 dropped
+      // the duplicate `payload.agentId`. Assert on the envelope's
+      // branded `actor` field instead.
+      const ids = hb.map((e) => e.actor as unknown as string).sort()
       expect(ids).toEqual(["alpha", "beta"])
       for (const event of hb) {
         expect(event.source).toBe("system")
         const payload = event.payload as {
-          agentId: string
           cursor: string | null
           timestamp: number
         }
         // No events consumed yet, so pendingCursor is still null.
         expect(payload.cursor).toBeNull()
         expect(typeof payload.timestamp).toBe("number")
+        // Explicitly confirm the dup field is gone — guards against a
+        // regression re-introducing it via drift in the emitter.
+        expect((payload as { agentId?: unknown }).agentId).toBeUndefined()
       }
 
-      // Second tick advances past 20s → expect one more per agent.
-      yield* TestClock.adjust(Duration.seconds(10))
+      // Second tick without cursor movement — change-detection guard
+      // should skip both agents, so the query still returns the
+      // original 2 heartbeats (not 4).
+      yield* TestClock.adjust(Duration.seconds(11))
       const hb2 = yield* store.query(
         { types: ["system.agent.heartbeat"] },
         100,
       )
-      expect(hb2.length).toBe(4)
+      expect(hb2.length).toBe(2)
     }).pipe(
       Effect.provide(MemoryStore.Live),
       Effect.provide(AgentCursorStore.Memory),
     ),
+  )
+
+  // v0.2.1: the change-detection guard should ONLY suppress emission
+  // when the agent's pendingCursor hasn't moved. Once the agent
+  // processes a new event between ticks, its cursor advances and the
+  // next heartbeat tick must include a fresh row.
+  it.scoped(
+    "second tick emits heartbeat after cursor moves (change-detection guard releases)",
+    () =>
+      Effect.gen(function* () {
+        const seen = yield* Ref.make(0)
+        const mover = defineAgent({
+          id: "mover",
+          on: { types: ["demo.ping"] },
+          handle: () => Ref.update(seen, (n) => n + 1),
+        })
+
+        yield* Effect.forkScoped(supervise([mover]))
+        yield* TestClock.adjust(Duration.millis(0))
+
+        // First tick — `mover`'s initial heartbeat (empty-seed case
+        // in forkHeartbeat means every known agent emits on tick 1).
+        yield* TestClock.adjust(Duration.seconds(11))
+        const store = yield* EventStore
+        const hb1 = yield* store.query(
+          { types: ["system.agent.heartbeat"] },
+          100,
+        )
+        expect(hb1.length).toBe(1)
+
+        // Append a demo.ping so `mover.pendingCursor` advances.
+        yield* store.append([
+          {
+            type: "demo.ping",
+            actor: "tester",
+            source: "cli",
+            payload: {},
+          },
+        ])
+        // Give the handler a chance to run under TestClock.
+        yield* TestClock.adjust(Duration.millis(0))
+        yield* TestClock.adjust(Duration.millis(0))
+
+        // Second tick — pendingCursor has moved so the guard releases.
+        yield* TestClock.adjust(Duration.seconds(11))
+        const hb2 = yield* store.query(
+          { types: ["system.agent.heartbeat"] },
+          100,
+        )
+        expect(hb2.length).toBe(2)
+      }).pipe(
+        Effect.provide(MemoryStore.Live),
+        Effect.provide(AgentCursorStore.Memory),
+      ),
   )
 })

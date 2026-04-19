@@ -13,7 +13,7 @@ import type {
   EventInput,
 } from "@rxweave/schema"
 import { SystemAgentHeartbeat } from "@rxweave/schema"
-import { EventStore } from "@rxweave/core"
+import { EventStore, type EventStoreShape } from "@rxweave/core"
 import { AgentCursorStore } from "./AgentCursorStore.js"
 import { AgentDef, validateAgent } from "./AgentDef.js"
 
@@ -34,6 +34,105 @@ interface CursorCtx {
   readonly pendingCursor: Ref.Ref<EventId | null>
   readonly flushedCount: Ref.Ref<number>
 }
+
+/**
+ * Forked heartbeat emitter — publishes `system.agent.heartbeat` every
+ * 10s for every agent whose `pendingCursor` has *moved* since its last
+ * emitted heartbeat. `Clock.currentTimeMillis` is sampled once per tick
+ * so all heartbeats in a tick share a timestamp (same observation
+ * moment), and all agents' heartbeats ship in a single batched append —
+ * one RPC instead of N when the store is remote. Failures are swallowed
+ * (registry digest mismatches, transient store errors, …) — one bad
+ * emit must not kill the fiber; heartbeats are best-effort telemetry.
+ *
+ * ## Change-detection guard (v0.2.1)
+ *
+ * We keep a per-agent `lastEmittedCursor` map. Each tick we compare the
+ * agent's current `pendingCursor` to its last-emitted value and only
+ * include it in the batch if the two differ. Rationale: a thousand
+ * idle agents that process no events would otherwise cost 1 RPC per
+ * 10s forever; with the guard, idle agents contribute zero writes
+ * until they move again.
+ *
+ * ### First-tick behaviour
+ *
+ * The very first tick has an empty `lastEmittedCursor` map, so every
+ * known agent emits — this gives the dashboard an initial "alive"
+ * signal even if no events are flowing yet. Subsequent ticks are
+ * change-gated.
+ *
+ * ### Trade-off — idle agents will age into "stale"
+ *
+ * Heartbeats are both (a) a liveness signal and (b) a cursor-telemetry
+ * signal. With change-detection, an idle agent that hasn't moved its
+ * cursor stops emitting — which means its `lastSeen` timestamp in the
+ * dashboard stops advancing, so the agent will transition fresh →
+ * stale → dead on the dashboard's existing thresholds after the
+ * configured intervals (currently 30s / 5m).
+ *
+ * This is a semantic shift that the cloud-side `apps/web/src/routes/
+ * dashboard/agents.tsx` view may want to account for — options:
+ *   - widen the `STALE_MS` / "dead" threshold on that view
+ *   - add a dedicated keep-alive event emitted every N ticks even
+ *     when the cursor is unchanged (e.g. 1 min instead of 10 s)
+ *
+ * Flagged in the v0.2.1 commit body so it's a visible follow-up.
+ */
+export const forkHeartbeat = (
+  store: EventStoreShape,
+  cursorCtx: ReadonlyMap<string, CursorCtx>,
+): Effect.Effect<void, never, never> =>
+  Effect.gen(function* () {
+    // Seeded empty; on the first tick every agent is "new" here, which
+    // is the desired first-time-alive emission path.
+    const lastEmittedCursor = new Map<string, EventId | null>()
+
+    yield* Effect.forever(
+      Effect.sleep(Duration.seconds(10)).pipe(
+        Effect.zipRight(
+          Effect.gen(function* () {
+            const timestamp = yield* Clock.currentTimeMillis
+            const heartbeats: Array<EventInput> = []
+            const emitted: Array<[string, EventId | null]> = []
+
+            for (const [agentId, ctx] of cursorCtx.entries()) {
+              const cursor = yield* Ref.get(ctx.pendingCursor)
+              const had = lastEmittedCursor.has(agentId)
+              const prev = lastEmittedCursor.get(agentId) ?? null
+              // First tick for this agent, OR the cursor moved since
+              // the last heartbeat we emitted — emit. Otherwise skip.
+              if (had && prev === cursor) continue
+              heartbeats.push({
+                type: SystemAgentHeartbeat.type,
+                actor: agentId as never,
+                source: "system",
+                payload: { cursor, timestamp },
+              })
+              emitted.push([agentId, cursor])
+            }
+
+            if (heartbeats.length === 0) return
+
+            // Only record `lastEmittedCursor` after the append succeeds
+            // so a failed append doesn't wedge the change-detection map
+            // into a state that skips retrying next tick.
+            yield* store
+              .append(heartbeats)
+              .pipe(
+                Effect.tap(() =>
+                  Effect.sync(() => {
+                    for (const [id, cursor] of emitted) {
+                      lastEmittedCursor.set(id, cursor)
+                    }
+                  }),
+                ),
+                Effect.catchAll(() => Effect.void),
+              )
+          }),
+        ),
+      ),
+    )
+  })
 
 export const supervise = (
   agents: ReadonlyArray<AgentDef<any>>,
@@ -111,38 +210,9 @@ export const supervise = (
         )
       })
 
-    // Heartbeat emitter — publishes `system.agent.heartbeat` every 10s per
-    // live agent. `Clock.currentTimeMillis` is sampled once per tick so all
-    // heartbeats in a tick share a timestamp (same observation moment), and
-    // all agents' heartbeats ship in a single batched append — one RPC
-    // instead of N when the store is remote. Failures are swallowed
-    // (registry digest mismatches, transient store errors, …) — one bad
-    // emit must not kill the fiber; heartbeats are best-effort telemetry.
-    yield* Effect.forkScoped(
-      Effect.forever(
-        Effect.sleep(Duration.seconds(10)).pipe(
-          Effect.zipRight(
-            Effect.gen(function* () {
-              const timestamp = yield* Clock.currentTimeMillis
-              const heartbeats: Array<EventInput> = []
-              for (const [agentId, ctx] of cursorCtx.entries()) {
-                const cursor = yield* Ref.get(ctx.pendingCursor)
-                heartbeats.push({
-                  type: SystemAgentHeartbeat.type,
-                  actor: agentId as never,
-                  source: "system",
-                  payload: { agentId, cursor, timestamp },
-                })
-              }
-              if (heartbeats.length === 0) return
-              yield* store
-                .append(heartbeats)
-                .pipe(Effect.catchAll(() => Effect.void))
-            }),
-          ),
-        ),
-      ),
-    )
+    // Forked heartbeat emitter — see `forkHeartbeat` for semantics and
+    // the v0.2.1 change-detection guard trade-off.
+    yield* Effect.forkScoped(forkHeartbeat(store, cursorCtx))
 
     for (const agent of agents) {
       yield* FiberMap.run(fibers, agent.id, runOne(agent))

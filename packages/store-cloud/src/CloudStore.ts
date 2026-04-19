@@ -41,7 +41,7 @@ import {
   Schedule,
   Stream,
 } from "effect"
-import { FetchHttpClient } from "@effect/platform"
+import { FetchHttpClient, type HttpClient } from "@effect/platform"
 import { RpcClient, RpcSerialization } from "@effect/rpc"
 import { type Cursor, EventRegistry, type EventEnvelope, type EventInput, type Filter, type EventId } from "@rxweave/schema"
 import {
@@ -54,7 +54,12 @@ import {
 } from "@rxweave/core"
 import { RxWeaveRpc } from "@rxweave/protocol"
 
-import { type TokenProvider, withBearerToken } from "./Auth.js"
+import {
+  cachedToken,
+  type TokenProvider,
+  withBearerToken,
+  withRefreshOn401,
+} from "./Auth.js"
 import { isRetryable } from "./Retry.js"
 
 export interface CloudStoreOpts {
@@ -204,13 +209,22 @@ export const makeCloudEventStore = (
  */
 export const CloudStore = {
   Live: (opts: CloudStoreOpts): Layer.Layer<EventStore, never, EventRegistry> => {
+    // TTL-cache the user-supplied token provider so we call it at most
+    // once per 5 minutes instead of once per RPC request — saves cost
+    // for providers backed by keychains or token-exchange flows.
+    // `withRefreshOn401` inspects response status and invalidates the
+    // cache on 401 so the next request refetches from the provider;
+    // composed AFTER `withBearerToken` so the tap sees the final
+    // request/response pair.
+    const token = cachedToken(opts.token)
     // Protocol layer: HTTP over fetch with NDJSON. The bearer token is
     // attached via `transformClient` — `withBearerToken` applies
     // `HttpClient.mapRequestEffect` so each request resolves the token
     // lazily (supports rotating credentials).
     const ProtocolLayer = RpcClient.layerProtocolHttp({
       url: opts.url,
-      transformClient: withBearerToken(opts.token),
+      transformClient: <E, R>(client: HttpClient.HttpClient.With<E, R>) =>
+        withRefreshOn401(token)(withBearerToken(token)(client)),
     }).pipe(
       Layer.provide(FetchHttpClient.layer),
       Layer.provide(RpcSerialization.layerNdjson),
