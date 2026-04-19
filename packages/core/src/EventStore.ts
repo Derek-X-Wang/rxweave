@@ -26,6 +26,29 @@ export interface EventStoreShape {
     filter: Filter,
     limit: number,
   ) => Effect.Effect<ReadonlyArray<EventEnvelope>, QueryError>
+  /**
+   * Exclusive-cursor pagination primitive.
+   *
+   * Returns up to `limit` events strictly after `cursor` (cursor itself is
+   * never included), respecting `filter`. Semantics:
+   *   - `cursor === "earliest"` behaves like "from the beginning" — the same
+   *     window `query(filter, limit)` would return.
+   *   - `cursor === "latest"` returns `[]` (nothing is strictly after the
+   *     most recent event).
+   *   - otherwise (branded `EventId`): returns events whose id is `>` cursor
+   *     in lexicographic / ULID time order.
+   *
+   * This is the index-scoped pagination method backends should implement
+   * against a `.gt("eventId", cursor)` predicate (or the in-memory
+   * equivalent). The point is to push the cursor through to the underlying
+   * index instead of scanning from the beginning every page, which is what
+   * silently stalled a subscriber whose cursor lived past page 1.
+   */
+  readonly queryAfter: (
+    cursor: Cursor,
+    filter: Filter,
+    limit: number,
+  ) => Effect.Effect<ReadonlyArray<EventEnvelope>, QueryError>
   readonly latestCursor: Effect.Effect<Cursor>
 }
 

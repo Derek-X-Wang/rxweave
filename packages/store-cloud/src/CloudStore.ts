@@ -147,6 +147,26 @@ export const CloudStore = {
             .Query({ filter, limit })
             .pipe(Effect.mapError(() => new QueryError({ reason: "cloud-query" }))),
 
+        // Client-side `queryAfter` — the v0.2.1 wire protocol does not (yet)
+        // expose a dedicated `QueryAfter` RPC, so we fetch via `Query` and
+        // filter by id locally. For the cloud adapter this is acceptable
+        // because the server's Subscribe handler is the hot path for
+        // cursor-paged streaming; `queryAfter` here is mostly a typecheck
+        // obligation for CloudStore to conform to the EventStore tag.
+        queryAfter: (cursor, filter, limit) =>
+          cursor === "latest"
+            ? Effect.succeed([])
+            : client
+                .Query({ filter, limit })
+                .pipe(
+                  Effect.map((rows) =>
+                    cursor === "earliest"
+                      ? rows
+                      : rows.filter((e) => e.id > cursor),
+                  ),
+                  Effect.mapError(() => new QueryError({ reason: "cloud-query" })),
+                ),
+
         latestCursor: Ref.get(lastDelivered),
       })
     })

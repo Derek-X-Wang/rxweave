@@ -91,5 +91,49 @@ export const runConformance = ({ name, layer, fresh }: ConformanceOptions) => {
         expect(res._tag).toBe("NotFound")
       }).pipe(Effect.provide(makeLayer())),
     )
+
+    it.effect("queryAfter('earliest') matches query() from the beginning", () =>
+      Effect.gen(function* () {
+        const store = yield* EventStore
+        yield* store.append([
+          { type: "canvas.node.created", actor: actor("tester"), source: "cli", payload: { id: "a", label: "A" } },
+          { type: "canvas.node.created", actor: actor("tester"), source: "cli", payload: { id: "b", label: "B" } },
+          { type: "canvas.node.created", actor: actor("tester"), source: "cli", payload: { id: "c", label: "C" } },
+        ])
+        const viaQuery = yield* store.query({}, 10)
+        const viaQueryAfter = yield* store.queryAfter("earliest", {}, 10)
+        expect(viaQueryAfter.length).toBe(viaQuery.length)
+        expect(viaQueryAfter.map((e) => e.id)).toEqual(viaQuery.map((e) => e.id))
+      }).pipe(Effect.provide(makeLayer())),
+    )
+
+    it.effect("queryAfter(eventId) returns only events strictly after cursor", () =>
+      Effect.gen(function* () {
+        const store = yield* EventStore
+        const appended = yield* store.append([
+          { type: "canvas.node.created", actor: actor("tester"), source: "cli", payload: { id: "a", label: "A" } },
+          { type: "canvas.node.created", actor: actor("tester"), source: "cli", payload: { id: "b", label: "B" } },
+          { type: "canvas.node.created", actor: actor("tester"), source: "cli", payload: { id: "c", label: "C" } },
+        ])
+        const after = yield* store.queryAfter(appended[0]!.id, {}, 10)
+        expect(after.length).toBe(2)
+        expect(after[0]!.id).toBe(appended[1]!.id)
+        expect(after[1]!.id).toBe(appended[2]!.id)
+        // Cursor itself must not be included.
+        expect(after.find((e) => e.id === appended[0]!.id)).toBeUndefined()
+      }).pipe(Effect.provide(makeLayer())),
+    )
+
+    it.effect("queryAfter('latest') returns []", () =>
+      Effect.gen(function* () {
+        const store = yield* EventStore
+        yield* store.append([
+          { type: "canvas.node.created", actor: actor("tester"), source: "cli", payload: { id: "a", label: "A" } },
+          { type: "canvas.node.created", actor: actor("tester"), source: "cli", payload: { id: "b", label: "B" } },
+        ])
+        const got = yield* store.queryAfter("latest", {}, 10)
+        expect(got.length).toBe(0)
+      }).pipe(Effect.provide(makeLayer())),
+    )
   })
 }

@@ -143,6 +143,17 @@ export const FileStore = {
               Effect.map((arr) => arr.filter(matchFilter(filter)).slice(0, limit)),
             ),
 
+          queryAfter: (cursor, filter, limit) =>
+            Ref.get(store).pipe(
+              Effect.map((arr) => {
+                if (cursor === "latest") return [] as ReadonlyArray<EventEnvelope>
+                const matches = matchFilter(filter)
+                const afterCursor =
+                  cursor === "earliest" ? arr : arr.filter((e) => e.id > cursor)
+                return afterCursor.filter(matches).slice(0, limit)
+              }),
+            ),
+
           latestCursor: Ref.get(store).pipe(
             Effect.map(
               (arr): Cursor => (arr.length ? arr[arr.length - 1]!.id : "earliest"),
