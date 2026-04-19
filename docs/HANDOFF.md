@@ -55,6 +55,7 @@ These are the eight architectural calls that shape the whole project. All are in
 | `@rxweave/store-cloud` | 0.1.0 | 14 + 1 opt-in integration (12 cases) | Bearer token + `HttpClient.mapRequestEffect` refresh-on-401; polling-safe `Subscribe`; retry classification |
 | `@rxweave/reactive` | 0.1.0 | 3 | `whereType`, `byActor`, `bySource`, `withinWindow` (uses `Clock`), `decodeAs` |
 | `@rxweave/runtime` | 0.1.0 | 12 | `defineAgent`, `supervise` via `FiberMap`, `AgentCursorStore` Memory+File, `withIdempotence` (local mode; store mode is pass-through — see TODO) |
+| `@rxweave/llm` | 0.1.0 | 4 | `defineLlmAgent` wrapping `defineAgent`; `tool()` helper with Effect Schema args → JSON Schema; Vercel AI SDK backend; tools return `EventInput[]`; multi-step via `stepCountIs`. Opt-in demo at `apps/dev/agents/llm-task-from-speech.ts`. |
 | `@rxweave/protocol` | 0.1.0 | 2 | `RxWeaveRpc` RpcGroup. `QueryAfter` added v0.2.1. |
 | `@rxweave/cli` | 0.1.0 | 7 | All commands, exit codes + stderr routing, config loader for all commands (not just `dev`). Compiled via `bun build --compile`. |
 

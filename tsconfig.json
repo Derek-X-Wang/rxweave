@@ -9,6 +9,7 @@
     { "path": "./packages/store-cloud" },
     { "path": "./packages/reactive" },
     { "path": "./packages/runtime" },
+    { "path": "./packages/llm" },
     { "path": "./packages/cli" }
   ]
 }

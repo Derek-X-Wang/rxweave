@@ -13,7 +13,10 @@
     "@rxweave/runtime": "workspace:*",
     "@rxweave/store-file": "workspace:*",
     "@rxweave/store-memory": "workspace:*",
-    "@rxweave/cli": "workspace:*"
+    "@rxweave/llm": "workspace:*",
+    "@rxweave/cli": "workspace:*",
+    "@ai-sdk/anthropic": "^2.0.0",
+    "ai": "^5.0.0"
   },
   "devDependencies": {
     "typescript": "^5.5.4",

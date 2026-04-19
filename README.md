@@ -37,6 +37,7 @@ See `apps/dev/` for a working example.
 - `@rxweave/store-memory` / `@rxweave/store-file` / `@rxweave/store-cloud` — store adapters (in-memory, JSONL file, and RxWeave Cloud over `@effect/rpc`)
 - `@rxweave/reactive` — Stream helpers (whereType, byActor, bySource, withinWindow, decodeAs)
 - `@rxweave/runtime` — `defineAgent`, `supervise`, `AgentCursorStore`, `withIdempotence`
+- `@rxweave/llm` — `defineLlmAgent`, `tool()` — LLM-backed agent on top of runtime (Vercel AI SDK)
 - `@rxweave/protocol` — `@effect/rpc` group shared with cloud
 - `@rxweave/cli` — `rxweave` binary
 
