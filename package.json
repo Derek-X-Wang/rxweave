@@ -20,11 +20,12 @@
     "dev": "turbo run dev"
   },
   "devDependencies": {
+    "@changesets/cli": "2.31.0",
+    "@effect/vitest": "^0.17.0",
+    "@types/node": "^22.10.0",
+    "oxlint": "^0.13.0",
     "turbo": "^2.5.0",
     "typescript": "^5.5.4",
-    "@types/node": "^22.10.0",
-    "vitest": "^2.1.0",
-    "@effect/vitest": "^0.17.0",
-    "oxlint": "^0.13.0"
+    "vitest": "^2.1.0"
   }
 }

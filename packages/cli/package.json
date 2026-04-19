@@ -1,15 +1,46 @@
 {
   "name": "@rxweave/cli",
-  "version": "0.1.0",
+  "version": "0.3.0",
+  "description": "The `rxweave` CLI — init, dev, emit, stream, query, inspect, registry. AI-agent-friendly (NDJSON I/O, no prompts).",
+  "keywords": [
+    "effect",
+    "cli",
+    "rxweave",
+    "agents"
+  ],
+  "license": "MIT",
+  "author": "Derek Wang",
+  "homepage": "https://github.com/Derek-X-Wang/rxweave#readme",
+  "bugs": {
+    "url": "https://github.com/Derek-X-Wang/rxweave/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Derek-X-Wang/rxweave.git",
+    "directory": "packages/cli"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "main": "./dist/src/index.js",
   "types": "./dist/src/index.d.ts",
-  "bin": { "rxweave": "./dist/bin/rxweave.js" },
-  "exports": {
-    ".": { "types": "./dist/src/index.d.ts", "default": "./dist/src/index.js" }
+  "bin": {
+    "rxweave": "./dist/bin/rxweave.js"
   },
-  "files": ["dist"],
-  "engines": { "node": ">=22", "bun": ">=1.1" },
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "default": "./dist/src/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=22",
+    "bun": ">=1.1"
+  },
   "scripts": {
     "build": "bun build ./src/index.ts ./bin/rxweave.ts --target=node --format=esm --outdir=dist --splitting --packages=external && tsc --emitDeclarationOnly --outDir dist",
     "build:binary": "bun build --compile ./bin/rxweave.ts --outfile=../../rxweave-bin",
@@ -23,12 +54,12 @@
     "@effect/platform": "^0.96.0",
     "@effect/platform-bun": "^0.89.0",
     "@parcel/watcher": "^2.5.0",
-    "@rxweave/schema": "workspace:*",
-    "@rxweave/core": "workspace:*",
-    "@rxweave/reactive": "workspace:*",
-    "@rxweave/runtime": "workspace:*",
-    "@rxweave/store-memory": "workspace:*",
-    "@rxweave/store-file": "workspace:*"
+    "@rxweave/schema": "workspace:^",
+    "@rxweave/core": "workspace:^",
+    "@rxweave/reactive": "workspace:^",
+    "@rxweave/runtime": "workspace:^",
+    "@rxweave/store-memory": "workspace:^",
+    "@rxweave/store-file": "workspace:^"
   },
   "devDependencies": {
     "typescript": "^5.5.4",

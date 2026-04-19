@@ -1,15 +1,46 @@
 {
   "name": "@rxweave/core",
-  "version": "0.1.0",
+  "version": "0.3.0",
+  "description": "EventStore service tag + conformance test harness for RxWeave storage adapters.",
+  "keywords": [
+    "effect",
+    "event-sourcing",
+    "rxweave"
+  ],
+  "license": "MIT",
+  "author": "Derek Wang",
+  "homepage": "https://github.com/Derek-X-Wang/rxweave#readme",
+  "bugs": {
+    "url": "https://github.com/Derek-X-Wang/rxweave/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Derek-X-Wang/rxweave.git",
+    "directory": "packages/core"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
-    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
-    "./testing": { "types": "./dist/testing/conformance.d.ts", "default": "./dist/testing/conformance.js" }
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing/conformance.d.ts",
+      "default": "./dist/testing/conformance.js"
+    }
   },
-  "files": ["dist"],
-  "engines": { "node": ">=22", "bun": ">=1.1" },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=22",
+    "bun": ">=1.1"
+  },
   "scripts": {
     "build": "bun build ./src/index.ts ./src/testing/conformance.ts --target=node --format=esm --outdir=dist --splitting --packages=external && tsc --emitDeclarationOnly --outDir dist",
     "typecheck": "tsc --noEmit",
@@ -18,7 +49,7 @@
   },
   "dependencies": {
     "effect": "^3.11.0",
-    "@rxweave/schema": "workspace:*"
+    "@rxweave/schema": "workspace:^"
   },
   "devDependencies": {
     "typescript": "^5.5.4",

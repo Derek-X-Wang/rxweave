@@ -1,6 +1,29 @@
 {
   "name": "@rxweave/llm",
-  "version": "0.1.0",
+  "version": "0.3.0",
+  "description": "LLM-backed agents for RxWeave via Vercel AI SDK — tool calling, Effect Schema args, event emission.",
+  "keywords": [
+    "effect",
+    "ai",
+    "llm",
+    "agents",
+    "rxweave",
+    "vercel-ai-sdk"
+  ],
+  "license": "MIT",
+  "author": "Derek Wang",
+  "homepage": "https://github.com/Derek-X-Wang/rxweave#readme",
+  "bugs": {
+    "url": "https://github.com/Derek-X-Wang/rxweave/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Derek-X-Wang/rxweave.git",
+    "directory": "packages/llm"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -10,7 +33,9 @@
       "default": "./dist/index.js"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "engines": {
     "node": ">=22",
     "bun": ">=1.1"
@@ -24,13 +49,13 @@
   "dependencies": {
     "effect": "^3.21.0",
     "ai": "^5.0.0",
-    "@rxweave/schema": "workspace:*",
-    "@rxweave/runtime": "workspace:*"
+    "@rxweave/schema": "workspace:^",
+    "@rxweave/runtime": "workspace:^"
   },
   "devDependencies": {
     "@effect/vitest": "^0.17.0",
-    "@rxweave/core": "workspace:*",
-    "@rxweave/store-memory": "workspace:*",
+    "@rxweave/core": "workspace:^",
+    "@rxweave/store-memory": "workspace:^",
     "@types/node": "^22.10.0",
     "msw": "2.13.4",
     "typescript": "^5.5.4",

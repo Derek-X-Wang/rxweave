@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.3.0
+
+First public npm release. All packages published at `0.3.0` under the `@rxweave` scope.
+
+- **New package `@rxweave/llm`** — LLM-backed agents via Vercel AI SDK. `defineLlmAgent` wraps `defineAgent` with a model + systemPrompt + tools config; tools carry Effect-Schema-validated args and return `EventInput[]`, which `supervise` stamps with `causedBy` the same way as hand-coded agents. Multi-step tool calling via `stopWhen: stepCountIs(5)` default.
+- **Publishing infrastructure** — `changesets` for future coordinated releases, LICENSE files per package, npm metadata (description, repository, homepage, bugs, keywords, author) on all ten packages, per-package READMEs pointing back to the monorepo.
+- **Workspace deps** — `workspace:*` migrated to `workspace:^` so published packages resolve to caret ranges on install.
+- Demo — `apps/dev/agents/llm-task-from-speech.ts` shows the LLM pattern replacing the hardcoded trigger-word scan in the existing `task-from-speech.ts` (opt-in; requires `ANTHROPIC_API_KEY`).
+
 ## v0.2.0
 
 Team CLOUD release. Ships:

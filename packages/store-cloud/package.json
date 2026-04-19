@@ -1,12 +1,43 @@
 {
   "name": "@rxweave/store-cloud",
-  "version": "0.2.0",
+  "version": "0.3.0",
+  "description": "Bearer-authenticated cloud EventStore client for RxWeave over @effect/rpc NDJSON.",
+  "keywords": [
+    "effect",
+    "event-sourcing",
+    "rxweave",
+    "cloud"
+  ],
+  "license": "MIT",
+  "author": "Derek Wang",
+  "homepage": "https://github.com/Derek-X-Wang/rxweave#readme",
+  "bugs": {
+    "url": "https://github.com/Derek-X-Wang/rxweave/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Derek-X-Wang/rxweave.git",
+    "directory": "packages/store-cloud"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
-  "files": ["dist"],
-  "engines": { "node": ">=22", "bun": ">=1.1" },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=22",
+    "bun": ">=1.1"
+  },
   "scripts": {
     "build": "bun build ./src/index.ts --target=node --format=esm --outdir=dist --splitting --packages=external && tsc --emitDeclarationOnly --outDir dist",
     "typecheck": "tsc --noEmit",
@@ -17,9 +48,9 @@
     "effect": "^3.21.0",
     "@effect/platform": "^0.96.0",
     "@effect/rpc": "^0.75.0",
-    "@rxweave/schema": "workspace:*",
-    "@rxweave/core": "workspace:*",
-    "@rxweave/protocol": "workspace:*"
+    "@rxweave/schema": "workspace:^",
+    "@rxweave/core": "workspace:^",
+    "@rxweave/protocol": "workspace:^"
   },
   "devDependencies": {
     "typescript": "^5.5.4",

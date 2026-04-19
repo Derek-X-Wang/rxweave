@@ -1,12 +1,43 @@
 {
   "name": "@rxweave/reactive",
-  "version": "0.1.0",
+  "version": "0.3.0",
+  "description": "Stream helpers for filtering and transforming RxWeave event streams (whereType, byActor, bySource, withinWindow).",
+  "keywords": [
+    "effect",
+    "stream",
+    "reactive",
+    "rxweave"
+  ],
+  "license": "MIT",
+  "author": "Derek Wang",
+  "homepage": "https://github.com/Derek-X-Wang/rxweave#readme",
+  "bugs": {
+    "url": "https://github.com/Derek-X-Wang/rxweave/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Derek-X-Wang/rxweave.git",
+    "directory": "packages/reactive"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
-  "files": ["dist"],
-  "engines": { "node": ">=22", "bun": ">=1.1" },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=22",
+    "bun": ">=1.1"
+  },
   "scripts": {
     "build": "bun build ./src/index.ts --target=node --format=esm --outdir=dist --splitting --packages=external && tsc --emitDeclarationOnly --outDir dist",
     "typecheck": "tsc --noEmit",
@@ -16,7 +47,7 @@
   "dependencies": {
     "effect": "^3.11.0",
     "minimatch": "^10.0.0",
-    "@rxweave/schema": "workspace:*"
+    "@rxweave/schema": "workspace:^"
   },
   "devDependencies": {
     "@types/minimatch": "^5.1.2",
