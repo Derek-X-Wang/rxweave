@@ -208,8 +208,16 @@ export const runConformance = (opts: ConformanceOptions) => {
         Effect.gen(function* () {
           const store = yield* EventStore
           const processed = yield* Ref.make(0)
+          // Resolve `latest` to a concrete cursor at subscribe time.
+          // Polling-based adapters (cloud Subscribe is a polling loop)
+          // pass the cursor back to the server on every poll; if we pass
+          // the literal "latest", the server evaluates "latest" anew
+          // each poll and always sees "nothing newer" → stream never
+          // delivers. Snapshotting the cursor up front makes "tail from
+          // now" work for both live and polling adapters.
+          const startCursor = yield* store.latestCursor
           const subFiber = yield* Effect.forkScoped(
-            store.subscribe({ cursor: "latest" }).pipe(
+            store.subscribe({ cursor: startCursor }).pipe(
               Stream.tap(() =>
                 Effect.sleep(Duration.millis(1)).pipe(
                   Effect.zipRight(Ref.update(processed, (n) => n + 1)),
