@@ -1,4 +1,4 @@
-import { Context, Effect, Layer, Ref, Schema } from "effect"
+import { Context, Effect, Layer, Option, Ref, Schema } from "effect"
 import { sha256 } from "@noble/hashes/sha2.js"
 import { bytesToHex } from "@noble/hashes/utils.js"
 import { DuplicateEventType, UnknownEventType } from "./Errors.js"
@@ -46,13 +46,20 @@ export class EventRegistry extends Context.Tag("rxweave/EventRegistry")<
     EventRegistry,
     Effect.gen(function* () {
       const store = yield* Ref.make<Map<string, EventDef>>(new Map())
+      // Memoize the computed digest — otherwise `digest` recomputes
+      // O(N log N) hash+sort on every read (e.g. every CloudStore.append).
+      // Invalidated inside `register` so the cache is always consistent
+      // with the underlying map.
+      const cachedDigest = yield* Ref.make<Option.Option<string>>(Option.none())
       const register: EventRegistryShape["register"] = (def) =>
         Ref.get(store).pipe(
           Effect.flatMap((map) => {
             if (map.has(def.type)) {
               return Effect.fail(new DuplicateEventType({ type: def.type }))
             }
-            return Ref.set(store, new Map(map).set(def.type, def))
+            return Ref.set(store, new Map(map).set(def.type, def)).pipe(
+              Effect.zipRight(Ref.set(cachedDigest, Option.none())),
+            )
           }),
         )
       const lookup: EventRegistryShape["lookup"] = (type) =>
@@ -67,7 +74,7 @@ export class EventRegistry extends Context.Tag("rxweave/EventRegistry")<
       const all: EventRegistryShape["all"] = Ref.get(store).pipe(
         Effect.map((map) => Array.from(map.values())),
       )
-      const digest: EventRegistryShape["digest"] = Ref.get(store).pipe(
+      const computeDigest: Effect.Effect<string> = Ref.get(store).pipe(
         Effect.map((map) => {
           const parts = Array.from(map.values())
             .map(digestOne)
@@ -75,6 +82,17 @@ export class EventRegistry extends Context.Tag("rxweave/EventRegistry")<
             .join("|")
           return hex(parts)
         }),
+      )
+      const digest: EventRegistryShape["digest"] = Ref.get(cachedDigest).pipe(
+        Effect.flatMap(
+          Option.match({
+            onSome: (d) => Effect.succeed(d),
+            onNone: () =>
+              computeDigest.pipe(
+                Effect.tap((d) => Ref.set(cachedDigest, Option.some(d))),
+              ),
+          }),
+        ),
       )
       const wire: EventRegistryShape["wire"] = Ref.get(store).pipe(
         Effect.map((map) =>

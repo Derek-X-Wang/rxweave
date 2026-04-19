@@ -8,6 +8,11 @@ const NodeCreated = defineEvent(
   Schema.Struct({ id: Schema.String }),
 )
 
+const NodeDeleted = defineEvent(
+  "canvas.node.deleted",
+  Schema.Struct({ id: Schema.String }),
+)
+
 describe("EventRegistry", () => {
   it.effect("registers and looks up a type", () =>
     Effect.gen(function* () {
@@ -53,6 +58,31 @@ describe("EventRegistry", () => {
       expect(wire.length).toBe(1)
       expect(wire[0]!.type).toBe("canvas.node.created")
       expect(wire[0]!.digest).toMatch(/^[0-9a-f]{64}$/)
+    }).pipe(Effect.provide(EventRegistry.Live)),
+  )
+
+  // Memoization: digest is recomputed on register, reused otherwise.
+  // Guards against the hot-path O(N log N) rebuild on every
+  // CloudStore.append that motivated the cache in the first place.
+  it.effect("digest is memoized between register calls", () =>
+    Effect.gen(function* () {
+      const reg = yield* EventRegistry
+      yield* reg.register(NodeCreated)
+      const first = yield* reg.digest
+      const second = yield* reg.digest
+      const third = yield* reg.digest
+      // Two sequential reads with no mutation between should be
+      // byte-identical (cache hit every time).
+      expect(second).toBe(first)
+      expect(third).toBe(first)
+      // Registering a new def invalidates the cache; the next read
+      // must reflect the new registry contents.
+      yield* reg.register(NodeDeleted)
+      const afterRegister = yield* reg.digest
+      expect(afterRegister).not.toBe(first)
+      // And caches again until the next register.
+      const afterRegisterSecondRead = yield* reg.digest
+      expect(afterRegisterSecondRead).toBe(afterRegister)
     }).pipe(Effect.provide(EventRegistry.Live)),
   )
 })

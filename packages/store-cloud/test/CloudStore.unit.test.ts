@@ -1,9 +1,17 @@
 import { describe, expect } from "vitest"
 import { it } from "@effect/vitest"
-import { Context, Effect, Layer } from "effect"
+import { Context, Effect, Exit, Layer, Stream } from "effect"
 import { EventStore } from "@rxweave/core"
-import { EventRegistry, SystemAgentHeartbeat } from "@rxweave/schema"
-import { CloudStore, syncRegistry, withBearerToken } from "../src/index.js"
+import { EventRegistry, SystemAgentHeartbeat, defineEvent } from "@rxweave/schema"
+import { Schema } from "effect"
+import {
+  CloudStore,
+  type CloudRpcClient,
+  isRetryable,
+  makeCloudEventStore,
+  syncRegistry,
+  withBearerToken,
+} from "../src/index.js"
 
 /**
  * Unit-level tests. We do NOT exercise the HTTP layer here — that's what
@@ -141,6 +149,203 @@ describe("CloudStore (unit)", () => {
       expect(pushCalls).toBe(1)
       expect(pushedDefs).toBe(1)
       expect(result.pushed).toBe(1)
+    }),
+  )
+
+  // Fix 4 — High 3: when the server enumerates `missingOnServer`, push
+  // should be the intersection of local defs and that list, not the
+  // whole registry. Guards against spamming the server with defs it
+  // already has (and against failing when a client holds a def the
+  // server explicitly rejected).
+  it.effect("syncRegistry filters push by diff.missingOnServer when non-empty", () =>
+    Effect.gen(function* () {
+      const TypeX = defineEvent("x", Schema.Struct({ v: Schema.String }))
+      const TypeY = defineEvent("y", Schema.Struct({ v: Schema.String }))
+      const TypeZ = defineEvent("z", Schema.Struct({ v: Schema.String }))
+
+      let pushedTypes: ReadonlyArray<string> = []
+      const stub = {
+        RegistrySyncDiff: (_input: { readonly clientDigest: string }) =>
+          Effect.succeed({
+            upToDate: false,
+            missingOnClient: [] as ReadonlyArray<never>,
+            missingOnServer: ["x", "y"] as ReadonlyArray<string>,
+          }),
+        RegistryPush: (input: {
+          readonly defs: ReadonlyArray<{ readonly type: string }>
+        }) =>
+          Effect.sync(() => {
+            pushedTypes = input.defs.map((d) => d.type)
+          }),
+      }
+      const populate = Effect.gen(function* () {
+        const registry = yield* EventRegistry
+        yield* registry.register(TypeX)
+        yield* registry.register(TypeY)
+        yield* registry.register(TypeZ)
+      })
+      const result = yield* populate.pipe(
+        Effect.zipRight(syncRegistry(stub)),
+        Effect.provide(EventRegistry.Live),
+      )
+      expect(result.pushed).toBe(2)
+      // Exactly x and y, not z.
+      expect(new Set(pushedTypes)).toEqual(new Set(["x", "y"]))
+    }),
+  )
+
+  // Fix 1 — Critical 3: latestCursor must reflect the most recently
+  // appended envelope's id (append-scoped), not the most recently
+  // subscribe-delivered one. Uses a stubbed RPC client to avoid
+  // standing up the HTTP/NDJSON transport.
+  it.effect("latestCursor updates after append to the last envelope's id", () =>
+    Effect.gen(function* () {
+      const fakeEnvelope = {
+        id: "01AAAAAAAAAAAAAAAAAAAAAAAA",
+        type: "canvas.node.created",
+        payload: {},
+        time: 0,
+        source: { kind: "human" as const },
+        actor: "test",
+        idempotencyKey: undefined,
+      } as const
+
+      const stub: CloudRpcClient = {
+        Append: (_input) => Effect.succeed([fakeEnvelope as never]),
+        Subscribe: () => Stream.empty,
+        GetById: (_input) => Effect.succeed(fakeEnvelope as never),
+        Query: (_input) => Effect.succeed([]),
+      }
+
+      const program = Effect.gen(function* () {
+        const registry = yield* EventRegistry
+        const store = yield* makeCloudEventStore(stub, registry)
+
+        // Baseline: before any append, latestCursor is "earliest".
+        const before = yield* store.latestCursor
+        expect(before).toBe("earliest")
+
+        // After a successful append, latestCursor reflects the envelope
+        // returned by the server — NOT "latest" (the old bug) and NOT
+        // whatever the subscribe stream delivered.
+        yield* store.append([
+          {
+            type: "canvas.node.created",
+            payload: {},
+            source: { kind: "human" },
+            actor: "test",
+          } as never,
+        ])
+        const after = yield* store.latestCursor
+        expect(after).toBe(fakeEnvelope.id)
+      })
+
+      yield* program.pipe(Effect.provide(EventRegistry.Live))
+    }),
+  )
+
+  it.effect("latestCursor stays 'earliest' when append returns an empty batch", () =>
+    Effect.gen(function* () {
+      const stub: CloudRpcClient = {
+        Append: (_input) => Effect.succeed([]),
+        Subscribe: () => Stream.empty,
+        GetById: (_input) => Effect.fail(new Error("unused")),
+        Query: (_input) => Effect.succeed([]),
+      }
+
+      const program = Effect.gen(function* () {
+        const registry = yield* EventRegistry
+        const store = yield* makeCloudEventStore(stub, registry)
+        yield* store.append([])
+        const cursor = yield* store.latestCursor
+        expect(cursor).toBe("earliest")
+      })
+
+      yield* program.pipe(Effect.provide(EventRegistry.Live))
+    }),
+  )
+
+  // Fix 2 — High 1: retry classification. Permanent errors must fail
+  // fast; only transient transport-layer errors consume the retry
+  // budget. We stub Subscribe to fail with a NotFoundWireError-shaped
+  // value, count the number of connection attempts, and assert the
+  // stream terminates after exactly one attempt.
+  it.effect("subscribe fails fast on NotFoundWireError without retrying", () =>
+    Effect.gen(function* () {
+      let subscribeCalls = 0
+      const permanentError = {
+        _tag: "NotFoundWireError",
+        id: "01AAAAAAAAAAAAAAAAAAAAAAAA",
+      }
+      const stub: CloudRpcClient = {
+        Append: (_input) => Effect.succeed([]),
+        Subscribe: (_input) => {
+          subscribeCalls += 1
+          return Stream.fail(permanentError)
+        },
+        GetById: (_input) => Effect.fail(new Error("unused")),
+        Query: (_input) => Effect.succeed([]),
+      }
+
+      const program = Effect.gen(function* () {
+        const registry = yield* EventRegistry
+        const store = yield* makeCloudEventStore(stub, registry)
+        const exit = yield* Effect.exit(
+          Stream.runCollect(store.subscribe({ cursor: "earliest" })),
+        )
+        expect(Exit.isFailure(exit)).toBe(true)
+        // Exactly one connect attempt — the retry schedule should
+        // short-circuit via `isRetryable` returning false.
+        expect(subscribeCalls).toBe(1)
+      })
+
+      yield* program.pipe(Effect.provide(EventRegistry.Live))
+    }),
+  )
+
+  it.effect("subscribe fails fast on RegistryWireError without retrying", () =>
+    Effect.gen(function* () {
+      let subscribeCalls = 0
+      const stub: CloudRpcClient = {
+        Append: (_input) => Effect.succeed([]),
+        Subscribe: (_input) => {
+          subscribeCalls += 1
+          return Stream.fail({ _tag: "RegistryWireError", reason: "digest-mismatch" })
+        },
+        GetById: (_input) => Effect.fail(new Error("unused")),
+        Query: (_input) => Effect.succeed([]),
+      }
+
+      const program = Effect.gen(function* () {
+        const registry = yield* EventRegistry
+        const store = yield* makeCloudEventStore(stub, registry)
+        const exit = yield* Effect.exit(
+          Stream.runCollect(store.subscribe({ cursor: "earliest" })),
+        )
+        expect(Exit.isFailure(exit)).toBe(true)
+        expect(subscribeCalls).toBe(1)
+      })
+
+      yield* program.pipe(Effect.provide(EventRegistry.Live))
+    }),
+  )
+
+  // Sanity test for the classifier itself — these cases matter because
+  // future wire errors might be added without remembering to keep the
+  // classifier in sync.
+  it.effect("isRetryable classifier matches the documented heuristic", () =>
+    Effect.sync(() => {
+      expect(isRetryable({ _tag: "RpcClientError", reason: "Protocol" })).toBe(true)
+      expect(isRetryable({ _tag: "SubscribeWireError", lagged: true })).toBe(true)
+      expect(isRetryable({ _tag: "SubscribeWireError", reason: "subscriber-lagged" })).toBe(true)
+      expect(isRetryable({ _tag: "SubscribeWireError", reason: "invalid-cursor" })).toBe(false)
+      expect(isRetryable({ _tag: "NotFoundWireError", id: "x" })).toBe(false)
+      expect(isRetryable({ _tag: "RegistryWireError", reason: "foo" })).toBe(false)
+      expect(isRetryable({ status: 401 })).toBe(false)
+      expect(isRetryable({ status: 503 })).toBe(true)
+      expect(isRetryable({})).toBe(false)
+      expect(isRetryable(null)).toBe(false)
+      expect(isRetryable("string")).toBe(false)
     }),
   )
 })

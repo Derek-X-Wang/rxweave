@@ -71,16 +71,24 @@ export const syncRegistry = (
       }
     }
 
-    // Server is missing defs we have. Push the full local wire list —
-    // server is idempotent on `type` so this is safe.
-    const defs = yield* registry.wire
-    if (defs.length > 0) {
-      yield* client.RegistryPush({ defs })
+    // Push only the defs the server told us it's missing. Falls back
+    // to pushing the whole registry when `missingOnServer` is empty —
+    // the current cloud server (v0.1 simplification) always returns
+    // empty here and trusts the client to reconcile, so the fallback
+    // preserves existing behavior. Once the server enumerates
+    // `missingOnServer`, we cleanly upgrade to a minimal push.
+    const allDefs = yield* registry.wire
+    const toPush =
+      diff.missingOnServer.length > 0
+        ? allDefs.filter((def) => diff.missingOnServer.includes(def.type))
+        : allDefs
+    if (toPush.length > 0) {
+      yield* client.RegistryPush({ defs: toPush })
     }
 
     return {
       upToDate: false,
-      pushed: defs.length,
+      pushed: toPush.length,
       missingOnClient: diff.missingOnClient,
     }
   })
