@@ -1,0 +1,10 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": { "rootDir": ".", "outDir": "./dist", "composite": true, "types": ["node"] },
+  "include": ["src/**/*", "bin/**/*"],
+  "references": [
+    { "path": "../schema" }, { "path": "../core" },
+    { "path": "../reactive" }, { "path": "../runtime" },
+    { "path": "../store-memory" }, { "path": "../store-file" }
+  ]
+}
