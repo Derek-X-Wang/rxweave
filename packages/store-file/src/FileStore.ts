@@ -74,6 +74,7 @@ export const FileStore = {
                   actor: input.actor ?? ("system" as never),
                   source: input.source ?? "cli",
                   timestamp,
+                  causedBy: input.causedBy,
                   payload: input.payload,
                 })
                 envelopes.push(envelope)
