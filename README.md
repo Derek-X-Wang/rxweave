@@ -42,6 +42,7 @@ See `apps/dev/` for a working example.
 
 ## Docs
 
+- **Handoff (start here if resuming work):** `docs/HANDOFF.md`
 - Design: `docs/superpowers/specs/2026-04-18-rxweave-design.md`
 - Implementation plan: `docs/superpowers/plans/2026-04-18-rxweave-v01-local-stack.md`
 
