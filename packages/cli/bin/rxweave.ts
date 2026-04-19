@@ -1,12 +1,13 @@
 #!/usr/bin/env bun
 import { Command } from "@effect/cli"
 import { BunContext, BunRuntime } from "@effect/platform-bun"
-import { Effect, Layer } from "effect"
+import { Cause, Effect, Layer, Option } from "effect"
 import { EventRegistry } from "@rxweave/schema"
 import { AgentCursorStore } from "@rxweave/runtime"
 import { MemoryStore } from "@rxweave/store-memory"
 import { rootCommand } from "../src/Main.js"
 import { Output } from "../src/Output.js"
+import { exitCodeFor, tagOf, toErrorPayload } from "../src/Errors.js"
 import { initCommand } from "../src/commands/init.js"
 import { devCommand } from "../src/commands/dev.js"
 import { emitCommand } from "../src/commands/emit.js"
@@ -39,9 +40,6 @@ const root = rootCommand.pipe(
 
 const cli = Command.run(root, { name: "rxweave", version: "0.1.0" })
 
-// v0.1 defaults: in-memory store, empty schema registry, in-memory agent
-// cursor store, JSON output. A follow-up task wires `--config` into proper
-// Layer selection.
 const defaults = Layer.mergeAll(
   MemoryStore.Live,
   EventRegistry.Live,
@@ -49,8 +47,22 @@ const defaults = Layer.mergeAll(
   Output.Live("json"),
 )
 
-cli(process.argv).pipe(
+const handled = cli(process.argv).pipe(
+  Effect.catchAllCause((cause) =>
+    Effect.gen(function* () {
+      const output = yield* Output
+      const fail = Cause.failureOption(cause)
+      if (Option.isSome(fail)) {
+        yield* output.writeError(toErrorPayload(fail.value))
+        yield* Effect.sync(() => process.exit(exitCodeFor(tagOf(fail.value))))
+      } else {
+        yield* output.writeError({ _tag: "FiberFailure", message: Cause.pretty(cause) })
+        yield* Effect.sync(() => process.exit(1))
+      }
+    }),
+  ),
   Effect.provide(defaults),
   Effect.provide(BunContext.layer),
-  BunRuntime.runMain,
 )
+
+BunRuntime.runMain(handled)

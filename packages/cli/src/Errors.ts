@@ -20,3 +20,33 @@ export const exitCodeFor = (tag: string): number => {
       return 1
   }
 }
+
+export const tagOf = (error: unknown): string => {
+  if (typeof error === "object" && error !== null && "_tag" in error) {
+    const tag = (error as { _tag: unknown })._tag
+    if (typeof tag === "string") return tag
+  }
+  return "UnknownError"
+}
+
+const NOISE_KEYS = new Set([
+  "stack",
+  "originalLine",
+  "originalColumn",
+  "line",
+  "column",
+  "sourceURL",
+])
+
+export const toErrorPayload = (error: unknown): Record<string, unknown> => {
+  if (typeof error === "object" && error !== null) {
+    const plain: Record<string, unknown> = {}
+    for (const key of Object.getOwnPropertyNames(error)) {
+      if (NOISE_KEYS.has(key)) continue
+      plain[key] = (error as Record<string, unknown>)[key]
+    }
+    if (!("_tag" in plain)) plain._tag = "UnknownError"
+    return plain
+  }
+  return { _tag: "UnknownError", message: String(error) }
+}
