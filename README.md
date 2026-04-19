@@ -34,7 +34,7 @@ See `apps/dev/` for a working example.
 
 - `@rxweave/schema` — event envelope, registry, ULID factory, cursor, filter
 - `@rxweave/core` — `EventStore` service tag + conformance harness
-- `@rxweave/store-memory` / `@rxweave/store-file` — store adapters
+- `@rxweave/store-memory` / `@rxweave/store-file` / `@rxweave/store-cloud` — store adapters (in-memory, JSONL file, and RxWeave Cloud over `@effect/rpc`)
 - `@rxweave/reactive` — Stream helpers (whereType, byActor, bySource, withinWindow, decodeAs)
 - `@rxweave/runtime` — `defineAgent`, `supervise`, `AgentCursorStore`, `withIdempotence`
 - `@rxweave/protocol` — `@effect/rpc` group shared with cloud
