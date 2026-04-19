@@ -7,6 +7,8 @@ import { AgentCursorStore } from "@rxweave/runtime"
 import { MemoryStore } from "@rxweave/store-memory"
 import { rootCommand } from "../src/Main.js"
 import { Output } from "../src/Output.js"
+import { initCommand } from "../src/commands/init.js"
+import { devCommand } from "../src/commands/dev.js"
 import { emitCommand } from "../src/commands/emit.js"
 import { streamCommand } from "../src/commands/stream.js"
 import { getCommand } from "../src/commands/get.js"
@@ -20,6 +22,8 @@ import { storeCommand } from "../src/commands/store.js"
 
 const root = rootCommand.pipe(
   Command.withSubcommands([
+    initCommand,
+    devCommand,
     emitCommand,
     streamCommand,
     getCommand,

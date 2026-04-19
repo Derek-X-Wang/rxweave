@@ -28,6 +28,11 @@ const defaultRestart: Schedule.Schedule<unknown, unknown> = Schedule.exponential
   2.0,
 ).pipe(Schedule.either(Schedule.spaced(Duration.seconds(30))))
 
+interface CursorCtx {
+  readonly pendingCursor: Ref.Ref<EventId | null>
+  readonly flushedCount: Ref.Ref<number>
+}
+
 export const supervise = (
   agents: ReadonlyArray<AgentDef<any>>,
   opts: SuperviseOpts = {},
@@ -40,16 +45,28 @@ export const supervise = (
     const fibers = yield* FiberMap.make<string, void, unknown>()
     const settings = { ...defaultOpts, ...opts }
 
+    // Hoisted out of `runOne` so the time-based flush loop below can walk
+    // every agent's cursor state. Keyed by agent id — `runOne` seeds it
+    // once at fiber start. Agents that fault and restart under the
+    // defaultRestart schedule keep the same refs, which is what we want:
+    // a crash shouldn't drop unflushed progress.
+    const cursorCtx = new Map<string, CursorCtx>()
+
+    const flushCursorFor = (agentId: string) => {
+      const c = cursorCtx.get(agentId)
+      if (!c) return Effect.void
+      return Ref.get(c.pendingCursor).pipe(
+        Effect.flatMap((cursor) => (cursor ? cursors.set(agentId, cursor) : Effect.void)),
+        Effect.zipRight(Ref.set(c.flushedCount, 0)),
+      )
+    }
+
     const runOne = <S>(agent: AgentDef<S>) =>
       Effect.gen(function* () {
         const state = yield* Ref.make<S>(agent.initialState as S)
         const pendingCursor = yield* Ref.make<EventId | null>(null)
         const flushedCount = yield* Ref.make(0)
-
-        const flushCursor = Ref.get(pendingCursor).pipe(
-          Effect.flatMap((c) => (c ? cursors.set(agent.id, c) : Effect.void)),
-          Effect.zipRight(Ref.set(flushedCount, 0)),
-        )
+        cursorCtx.set(agent.id, { pendingCursor, flushedCount })
 
         const startCursor = yield* cursors.get(agent.id)
 
@@ -80,7 +97,7 @@ export const supervise = (
             yield* Ref.set(pendingCursor, event.id)
             const count = yield* Ref.updateAndGet(flushedCount, (n) => n + 1)
             if (count >= settings.cursorFlush.events) {
-              yield* flushCursor
+              yield* flushCursorFor(agent.id)
             }
           })
 
@@ -88,13 +105,31 @@ export const supervise = (
 
         yield* Stream.runForEach(stream, onEvent).pipe(
           Effect.retry(agent.restart ?? defaultRestart),
-          Effect.onExit(() => flushCursor),
+          Effect.onExit(() => flushCursorFor(agent.id)),
         )
       })
 
     for (const agent of agents) {
       yield* FiberMap.run(fibers, agent.id, runOne(agent))
     }
+
+    // Time-based cursor flush — complements the count-based flush in
+    // `onEvent` so agents with low event volume don't sit on an
+    // unflushed cursor indefinitely. Forked as scoped so it interrupts
+    // when the enclosing scope closes (e.g. when `dev` restarts).
+    yield* Effect.forkScoped(
+      Effect.forever(
+        Effect.sleep(Duration.millis(settings.cursorFlush.millis)).pipe(
+          Effect.zipRight(
+            Effect.forEach(
+              Array.from(cursorCtx.keys()),
+              (id) => flushCursorFor(id),
+              { discard: true },
+            ),
+          ),
+        ),
+      ),
+    )
 
     yield* Effect.never
   })
