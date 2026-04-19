@@ -4,10 +4,10 @@ import { BunContext, BunRuntime } from "@effect/platform-bun"
 import { Cause, Effect, Layer, Option } from "effect"
 import { EventRegistry } from "@rxweave/schema"
 import { AgentCursorStore } from "@rxweave/runtime"
-import { MemoryStore } from "@rxweave/store-memory"
 import { rootCommand } from "../src/Main.js"
 import { Output } from "../src/Output.js"
 import { exitCodeFor, tagOf, toErrorPayload } from "../src/Errors.js"
+import { DEFAULT_CONFIG_PATH, readConfigPathFromArgv, resolveStoreLayer } from "../src/Setup.js"
 import { initCommand } from "../src/commands/init.js"
 import { devCommand } from "../src/commands/dev.js"
 import { emitCommand } from "../src/commands/emit.js"
@@ -40,14 +40,14 @@ const root = rootCommand.pipe(
 
 const cli = Command.run(root, { name: "rxweave", version: "0.1.0" })
 
-const defaults = Layer.mergeAll(
-  MemoryStore.Live,
-  EventRegistry.Live,
-  AgentCursorStore.Memory,
-  Output.Live("json"),
-)
+const configPath = readConfigPathFromArgv(process.argv) ?? DEFAULT_CONFIG_PATH
 
-const handled = cli(process.argv).pipe(
+const app = Effect.gen(function* () {
+  const storeLayer = yield* resolveStoreLayer(configPath)
+  return yield* cli(process.argv).pipe(Effect.provide(storeLayer))
+})
+
+const handled = app.pipe(
   Effect.catchAllCause((cause) =>
     Effect.gen(function* () {
       const output = yield* Output
@@ -61,7 +61,13 @@ const handled = cli(process.argv).pipe(
       }
     }),
   ),
-  Effect.provide(defaults),
+  Effect.provide(
+    Layer.mergeAll(
+      EventRegistry.Live,
+      AgentCursorStore.Memory,
+      Output.Live("json"),
+    ),
+  ),
   Effect.provide(BunContext.layer),
 )
 
