@@ -4,7 +4,7 @@
 
 Team CLOUD release. Ships:
 
-- `@rxweave/store-cloud` — new package. `Live.Cloud` adapter over `@effect/rpc` with bearer-token auth, NDJSON HTTP transport, and reconnect-with-cursor subscribe (exclusive cursor → no duplicates or gaps on retry).
+- `@rxweave/store-cloud` — new package. `Live.Cloud` adapter over `@effect/rpc` with bearer-token auth, NDJSON HTTP transport, and reconnect-with-cursor subscription (exclusive cursor → no duplicates or gaps on retry).
 - `@rxweave/schema` — new event type `system.agent.heartbeat` (`SystemAgentHeartbeat` export). Canonical registration point for runtime→cloud agent liveness signals.
 - `@rxweave/runtime` — `supervise()` now forks a heartbeat fiber that emits `system.agent.heartbeat` per running agent every 10 seconds. Failures are swallowed (best-effort). Uses `Clock.currentTimeMillis` so tests driven by `TestClock` are deterministic.
 

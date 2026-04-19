@@ -2,7 +2,7 @@ import { describe, expect } from "vitest"
 import { it } from "@effect/vitest"
 import { Context, Effect, Layer } from "effect"
 import { EventStore } from "@rxweave/core"
-import { EventRegistry } from "@rxweave/schema"
+import { EventRegistry, SystemAgentHeartbeat } from "@rxweave/schema"
 import { CloudStore, syncRegistry, withBearerToken } from "../src/index.js"
 
 /**
@@ -47,7 +47,7 @@ describe("CloudStore (unit)", () => {
     }).pipe(Effect.scoped),
   )
 
-  it.effect("withBearerToken returns a function that accepts an HttpClient", () =>
+  it.effect("withBearerToken returns a middleware function", () =>
     Effect.sync(() => {
       const mw = withBearerToken(() => "t")
       expect(typeof mw).toBe("function")
@@ -83,7 +83,7 @@ describe("CloudStore (unit)", () => {
     }),
   )
 
-  it.effect("syncRegistry calls RegistryPush when digests differ", () =>
+  it.effect("syncRegistry skips RegistryPush when digests differ but registry is empty", () =>
     Effect.gen(function* () {
       let pushCalls = 0
       let pushedDefs = 0
@@ -109,6 +109,38 @@ describe("CloudStore (unit)", () => {
       expect(pushCalls).toBe(0)
       expect(pushedDefs).toBe(0)
       expect(result.pushed).toBe(0)
+    }),
+  )
+
+  it.effect("syncRegistry pushes registered defs when digests differ", () =>
+    Effect.gen(function* () {
+      let pushCalls = 0
+      let pushedDefs = 0
+      const stub = {
+        RegistrySyncDiff: (_input: { readonly clientDigest: string }) =>
+          Effect.succeed({
+            upToDate: false,
+            missingOnClient: [] as ReadonlyArray<never>,
+            missingOnServer: [] as ReadonlyArray<string>,
+          }),
+        RegistryPush: (input: { readonly defs: ReadonlyArray<unknown> }) =>
+          Effect.sync(() => {
+            pushCalls += 1
+            pushedDefs = input.defs.length
+          }),
+      }
+      const populate = Effect.gen(function* () {
+        const registry = yield* EventRegistry
+        yield* registry.register(SystemAgentHeartbeat)
+      })
+      const result = yield* populate.pipe(
+        Effect.zipRight(syncRegistry(stub)),
+        Effect.provide(EventRegistry.Live),
+      )
+      expect(result.upToDate).toBe(false)
+      expect(pushCalls).toBe(1)
+      expect(pushedDefs).toBe(1)
+      expect(result.pushed).toBe(1)
     }),
   )
 })
