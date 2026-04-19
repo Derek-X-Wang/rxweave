@@ -1,0 +1,12 @@
+node_modules/
+.rxweave/
+dist/
+.turbo/
+*.log
+.DS_Store
+.env
+.env.local
+coverage/
+*.tsbuildinfo
+bun.lockb.bak
+/rxweave-bin
