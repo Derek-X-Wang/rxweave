@@ -19,12 +19,21 @@ export interface ConformanceOptions {
    * baseline. No-op for stores that are torn down and recreated per-test.
    */
   readonly resetBetweenTests?: Effect.Effect<void, never, never>
+  /**
+   * Size of the flood in the `slow subscriber under flood` case. Defaults
+   * to 2000 for in-memory / in-process adapters where the write path is
+   * ~free. Remote adapters (e.g. `store-cloud` against live Convex) should
+   * pass a smaller N — 2000 real HTTP appends exceed any sensible test
+   * timeout. The assertion logic (subscriber processed > 0, store still
+   * accepts writes after the flood) is unchanged under a smaller N.
+   */
+  readonly floodSize?: number
 }
 
 const actor = (v: string): ActorId => v as ActorId
 
 export const runConformance = (opts: ConformanceOptions) => {
-  const { name, layer, fresh, resetBetweenTests } = opts
+  const { name, layer, fresh, resetBetweenTests, floodSize = 2000 } = opts
   const makeLayer = fresh ?? (() => layer)
 
   describe(`${name} conformance`, () => {
@@ -202,7 +211,7 @@ export const runConformance = (opts: ConformanceOptions) => {
           )
           // Let the subscriber wire up before flooding.
           yield* Effect.sleep(Duration.millis(20))
-          const flood = Array.from({ length: 2000 }, (_, i) => ({
+          const flood = Array.from({ length: floodSize }, (_, i) => ({
             type: "flood.tick",
             actor: actor("flooder"),
             source: "cli" as const,
@@ -221,11 +230,12 @@ export const runConformance = (opts: ConformanceOptions) => {
           yield* Fiber.interrupt(subFiber)
           // TODO(v0.2.x): assert SubscriberLagged tag once adapters emit it.
         }).pipe(Effect.provide(makeLayer())),
-      // 15s timeout (default 5s) — remote cloud adapter does 2000 real
-      // network round-trips here, which blows past vitest's default. The
-      // assertion logic is unchanged; only the clock budget moves. Scoped
-      // to this single `it.scopedLive` so the rest of the suite still
-      // benefits from fast-fail defaults.
+      // 15s timeout (default 5s) — remote adapters do real network
+      // round-trips here, which blow past vitest's default. Paired with
+      // the `floodSize` capability flag: in-memory runs still use 2000
+      // against the 15s ceiling (plenty), cloud runs use a smaller N.
+      // Scoped to this single `it.scopedLive` so the rest of the suite
+      // still benefits from fast-fail defaults.
       15000,
     )
 

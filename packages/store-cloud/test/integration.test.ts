@@ -64,6 +64,10 @@ if (url && token) {
     layer: make(),
     fresh: make,
     resetBetweenTests,
+    // Remote Convex: 2000 HTTP appends exceed 15s. 200 still exercises
+    // the slow-subscriber-under-flood invariants (subscriber processed
+    // > 0, store accepts writes after flood) within ~10s of network I/O.
+    floodSize: 200,
   })
 } else {
   describe("CloudStore integration (set RXWEAVE_CLOUD_URL + RXWEAVE_TOKEN)", () => {
