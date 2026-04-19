@@ -4,6 +4,7 @@
     { "path": "./packages/schema" },
     { "path": "./packages/core" },
     { "path": "./packages/protocol" },
-    { "path": "./packages/store-memory" }
+    { "path": "./packages/store-memory" },
+    { "path": "./packages/store-file" }
   ]
 }
