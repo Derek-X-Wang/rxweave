@@ -11,7 +11,10 @@
     }
   },
   "files": ["dist"],
-  "engines": { "node": ">=22", "bun": ">=1.1" },
+  "engines": {
+    "node": ">=22",
+    "bun": ">=1.1"
+  },
   "scripts": {
     "build": "bun build ./src/index.ts --target=node --format=esm --outdir=dist --splitting --packages=external && tsc --emitDeclarationOnly --outDir dist",
     "typecheck": "tsc --noEmit",
@@ -19,6 +22,7 @@
     "lint": "oxlint src test"
   },
   "dependencies": {
+    "@noble/hashes": "^2.0.0",
     "effect": "^3.11.0"
   },
   "devDependencies": {

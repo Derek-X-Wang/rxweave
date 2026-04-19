@@ -1,6 +1,10 @@
 import { Context, Effect, Layer, Ref, Schema } from "effect"
-import { createHash } from "node:crypto"
+import { sha256 } from "@noble/hashes/sha2.js"
+import { bytesToHex } from "@noble/hashes/utils.js"
 import { DuplicateEventType, UnknownEventType } from "./Errors.js"
+
+const hex = (input: string): string =>
+  bytesToHex(sha256(new TextEncoder().encode(input)))
 
 export interface EventDef<A = unknown, I = unknown> {
   readonly type: string
@@ -23,9 +27,7 @@ export class EventDefWire extends Schema.Class<EventDefWire>("EventDefWire")({
 
 const digestOne = (def: EventDef): string => {
   const ast = JSON.stringify((def.payload as unknown as { ast: unknown }).ast ?? null)
-  return createHash("sha256")
-    .update(`${def.type}|${def.version ?? 1}|${ast}`)
-    .digest("hex")
+  return hex(`${def.type}|${def.version ?? 1}|${ast}`)
 }
 
 export interface EventRegistryShape {
@@ -71,7 +73,7 @@ export class EventRegistry extends Context.Tag("rxweave/EventRegistry")<
             .map(digestOne)
             .sort()
             .join("|")
-          return createHash("sha256").update(parts).digest("hex")
+          return hex(parts)
         }),
       )
       const wire: EventRegistryShape["wire"] = Ref.get(store).pipe(

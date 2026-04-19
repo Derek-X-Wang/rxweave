@@ -121,6 +121,7 @@
       "name": "@rxweave/schema",
       "version": "0.1.0",
       "dependencies": {
+        "@noble/hashes": "^2.0.0",
         "effect": "^3.11.0",
       },
       "devDependencies": {
@@ -253,6 +254,8 @@
     "@msgpackr-extract/msgpackr-extract-linux-x64": ["@msgpackr-extract/msgpackr-extract-linux-x64@3.0.3", "", { "os": "linux", "cpu": "x64" }, "sha512-cvwNfbP07pKUfq1uH+S6KJ7dT9K8WOE4ZiAcsrSes+UY55E/0jLYc+vq+DO7jlmqRb5zAggExKm0H7O/CBaesg=="],
 
     "@msgpackr-extract/msgpackr-extract-win32-x64": ["@msgpackr-extract/msgpackr-extract-win32-x64@3.0.3", "", { "os": "win32", "cpu": "x64" }, "sha512-x0fWaQtYp4E6sktbsdAqnehxDgEc/VwM7uLsRCYWaiGu0ykYdZPiS8zCWdnjHwyiumousxfBm4SO31eXqwEZhQ=="],
+
+    "@noble/hashes": ["@noble/hashes@2.2.0", "", {}, "sha512-IYqDGiTXab6FniAgnSdZwgWbomxpy9FtYvLKs7wCUs2a8RkITG+DFGO1DM9cr+E3/RgADRpFjrKVaJ1z6sjtEg=="],
 
     "@oxlint/darwin-arm64": ["@oxlint/darwin-arm64@0.13.2", "", { "os": "darwin", "cpu": "arm64" }, "sha512-Jbi2UX1xTFTpH/D6n15RzDSG/44oJ0FwrHWl96TsdD3PAOGxmm8LgcrsCU4d22TSN7ShDFB8y34MYplduRzhfA=="],
 
