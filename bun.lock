@@ -13,6 +13,22 @@
         "vitest": "^2.1.0",
       },
     },
+    "apps/dev": {
+      "name": "@rxweave/dev",
+      "version": "0.0.0",
+      "dependencies": {
+        "@rxweave/cli": "workspace:*",
+        "@rxweave/runtime": "workspace:*",
+        "@rxweave/schema": "workspace:*",
+        "@rxweave/store-file": "workspace:*",
+        "@rxweave/store-memory": "workspace:*",
+        "effect": "^3.11.0",
+      },
+      "devDependencies": {
+        "@types/node": "^22.10.0",
+        "typescript": "^5.5.4",
+      },
+    },
     "packages/cli": {
       "name": "@rxweave/cli",
       "version": "0.1.0",
@@ -335,6 +351,8 @@
     "@rxweave/cli": ["@rxweave/cli@workspace:packages/cli"],
 
     "@rxweave/core": ["@rxweave/core@workspace:packages/core"],
+
+    "@rxweave/dev": ["@rxweave/dev@workspace:apps/dev"],
 
     "@rxweave/protocol": ["@rxweave/protocol@workspace:packages/protocol"],
 

@@ -1,0 +1,22 @@
+{
+  "name": "@rxweave/dev",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "rxweave dev --config ./rxweave.config.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "effect": "^3.11.0",
+    "@rxweave/schema": "workspace:*",
+    "@rxweave/runtime": "workspace:*",
+    "@rxweave/store-file": "workspace:*",
+    "@rxweave/store-memory": "workspace:*",
+    "@rxweave/cli": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.4",
+    "@types/node": "^22.10.0"
+  }
+}
