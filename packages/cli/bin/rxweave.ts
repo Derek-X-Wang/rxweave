@@ -10,9 +10,20 @@ import { emitCommand } from "../src/commands/emit.js"
 import { streamCommand } from "../src/commands/stream.js"
 import { getCommand } from "../src/commands/get.js"
 import { inspectCommand } from "../src/commands/inspect.js"
+import { countCommand } from "../src/commands/count.js"
+import { lastCommand } from "../src/commands/last.js"
+import { headCommand } from "../src/commands/head.js"
 
 const root = rootCommand.pipe(
-  Command.withSubcommands([emitCommand, streamCommand, getCommand, inspectCommand]),
+  Command.withSubcommands([
+    emitCommand,
+    streamCommand,
+    getCommand,
+    inspectCommand,
+    countCommand,
+    lastCommand,
+    headCommand,
+  ]),
 )
 
 const cli = Command.run(root, { name: "rxweave", version: "0.1.0" })
