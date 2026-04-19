@@ -7,7 +7,13 @@ import { AgentCursorStore } from "@rxweave/runtime"
 import { rootCommand } from "../src/Main.js"
 import { Output } from "../src/Output.js"
 import { exitCodeFor, tagOf, toErrorPayload } from "../src/Errors.js"
-import { DEFAULT_CONFIG_PATH, readConfigPathFromArgv, resolveStoreLayer } from "../src/Setup.js"
+import { MemoryStore } from "@rxweave/store-memory"
+import {
+  DEFAULT_CONFIG_PATH,
+  isMetaInvocation,
+  readConfigPathFromArgv,
+  resolveStoreLayer,
+} from "../src/Setup.js"
 import { initCommand } from "../src/commands/init.js"
 import { devCommand } from "../src/commands/dev.js"
 import { emitCommand } from "../src/commands/emit.js"
@@ -41,9 +47,12 @@ const root = rootCommand.pipe(
 const cli = Command.run(root, { name: "rxweave", version: "0.1.0" })
 
 const configPath = readConfigPathFromArgv(process.argv) ?? DEFAULT_CONFIG_PATH
+const metaPath = isMetaInvocation(process.argv)
 
 const app = Effect.gen(function* () {
-  const storeLayer = yield* resolveStoreLayer(configPath)
+  const storeLayer = metaPath
+    ? MemoryStore.Live
+    : yield* resolveStoreLayer(configPath)
   return yield* cli(process.argv).pipe(Effect.provide(storeLayer))
 })
 

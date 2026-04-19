@@ -8,7 +8,6 @@ export interface ConformanceOptions {
   readonly name: string
   readonly layer: Layer.Layer<EventStore>
   readonly fresh?: () => Layer.Layer<EventStore>
-  readonly supportsColdStartRecovery?: boolean
   readonly coldStartFactory?: () => Layer.Layer<EventStore>
 }
 
@@ -178,7 +177,6 @@ export const runConformance = (opts: ConformanceOptions) => {
               ),
             ),
             Stream.runDrain,
-            Effect.either,
           ),
         )
         // Let the subscriber wire up before flooding.
@@ -227,7 +225,7 @@ export const runConformance = (opts: ConformanceOptions) => {
       }),
     )
 
-    if (opts.supportsColdStartRecovery && opts.coldStartFactory) {
+    if (opts.coldStartFactory) {
       const coldStartFactory = opts.coldStartFactory
       it.effect("cold-start recovery boots from torn tail without data loss", () =>
         Effect.gen(function* () {

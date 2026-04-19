@@ -29,24 +29,25 @@ export const tagOf = (error: unknown): string => {
   return "UnknownError"
 }
 
-const NOISE_KEYS = new Set([
-  "stack",
-  "originalLine",
-  "originalColumn",
-  "line",
-  "column",
-  "sourceURL",
-])
+export type ErrorPayload = { readonly _tag: string } & Record<string, unknown>
 
-export const toErrorPayload = (error: unknown): Record<string, unknown> => {
+export const toErrorPayload = (error: unknown): ErrorPayload => {
   if (typeof error === "object" && error !== null) {
-    const plain: Record<string, unknown> = {}
-    for (const key of Object.getOwnPropertyNames(error)) {
-      if (NOISE_KEYS.has(key)) continue
-      plain[key] = (error as Record<string, unknown>)[key]
+    // Every Schema.TaggedError extends Inspectable and ships a toJSON() that
+    // returns { _tag, ...fields } without Bun's debug noise. Use it when
+    // available; fall back to a plain-object copy for raw Errors (e.g. the
+    // Error returned from loadConfig's tryPromise catch handler).
+    const maybeToJson = (error as { toJSON?: () => unknown }).toJSON
+    if (typeof maybeToJson === "function") {
+      const json = maybeToJson.call(error) as Record<string, unknown>
+      if (typeof json._tag !== "string") return { ...json, _tag: "UnknownError" }
+      return json as ErrorPayload
     }
-    if (!("_tag" in plain)) plain._tag = "UnknownError"
-    return plain
+    const plain: Record<string, unknown> = {}
+    if (error instanceof Error && typeof error.message === "string") {
+      plain.message = error.message
+    }
+    return { ...plain, _tag: "UnknownError" }
   }
   return { _tag: "UnknownError", message: String(error) }
 }

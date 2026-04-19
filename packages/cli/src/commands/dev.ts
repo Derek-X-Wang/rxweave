@@ -1,4 +1,4 @@
-import { Command, Options } from "@effect/cli"
+import { Command } from "@effect/cli"
 import { Effect, Fiber, Ref, Scope, Stream } from "effect"
 import * as Path from "node:path"
 import { EventRegistry } from "@rxweave/schema"
@@ -6,12 +6,8 @@ import { AgentCursorStore, supervise } from "@rxweave/runtime"
 import { EventStore } from "@rxweave/core"
 import { Output } from "../Output.js"
 import { loadConfig } from "../Config.js"
+import { configOption } from "../Main.js"
 import { watchPath } from "../dev/Watcher.js"
-
-const configOpt = Options.file("config").pipe(
-  Options.withAlias("c"),
-  Options.withDefault("./rxweave.config.ts"),
-)
 
 /**
  * `rxweave dev` — load a config, start a Supervisor under a scope, and
@@ -39,7 +35,7 @@ const configOpt = Options.file("config").pipe(
  * v0.2 feature. The config could later carry an optional
  * `cursorStore: Layer` field.
  */
-export const devCommand = Command.make("dev", { config: configOpt }, ({ config }) =>
+export const devCommand = Command.make("dev", { config: configOption }, ({ config }) =>
   Effect.gen(function* () {
     const out = yield* Output
     const currentFiber = yield* Ref.make<Fiber.RuntimeFiber<unknown, unknown> | null>(null)

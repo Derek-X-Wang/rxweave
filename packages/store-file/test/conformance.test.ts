@@ -60,6 +60,5 @@ runConformance({
   name: "FileStore",
   layer: makeLayer(),
   fresh: makeLayer,
-  supportsColdStartRecovery: true,
   coldStartFactory,
 })
