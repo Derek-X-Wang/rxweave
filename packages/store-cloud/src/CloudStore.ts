@@ -40,11 +40,7 @@ import {
 } from "effect"
 import { FetchHttpClient } from "@effect/platform"
 import { RpcClient, RpcSerialization } from "@effect/rpc"
-import {
-  type Cursor,
-  EventRegistry,
-  Ulid,
-} from "@rxweave/schema"
+import { type Cursor, EventRegistry } from "@rxweave/schema"
 import {
   AppendError,
   EventStore,
@@ -112,12 +108,14 @@ export const CloudStore = {
         subscribe: ({ cursor, filter }) => {
           // Each (re)connection re-reads `lastDelivered` so a reconnect
           // after some events were already delivered resumes from the
-          // most recent one, not the original cursor.
+          // most recent one, not the original cursor. Only the
+          // Stream.tap below writes to `lastDelivered` — seeding it
+          // with `cursor` here would lie to `latestCursor`, which is
+          // defined as "most recent event delivered" (not "initial seed").
           const connect = Effect.gen(function* () {
             const resumeFrom = yield* Ref.get(lastDelivered)
             const effectiveCursor =
               resumeFrom === "latest" ? cursor : resumeFrom
-            yield* Ref.set(lastDelivered, effectiveCursor)
             return client
               .Subscribe(
                 filter === undefined
@@ -153,9 +151,6 @@ export const CloudStore = {
       })
     })
 
-    return Layer.scoped(EventStore, StoreEffect).pipe(
-      Layer.provide(ProtocolLayer),
-      Layer.provide(Ulid.Live),
-    )
+    return Layer.scoped(EventStore, StoreEffect).pipe(Layer.provide(ProtocolLayer))
   },
 }

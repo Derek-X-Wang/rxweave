@@ -12,6 +12,7 @@ import type {
   EventId,
   EventInput,
 } from "@rxweave/schema"
+import { SystemAgentHeartbeat } from "@rxweave/schema"
 import { EventStore } from "@rxweave/core"
 import { AgentCursorStore } from "./AgentCursorStore.js"
 import { AgentDef, validateAgent } from "./AgentDef.js"
@@ -110,10 +111,11 @@ export const supervise = (
         )
       })
 
-    // Heartbeat emitter — publishes `system.agent.heartbeat` every 10s
-    // per live agent so external observers (cloud dashboard agents view,
-    // Plan B Task 10) have something to render. `Clock.currentTimeMillis`
-    // keeps this deterministic under `TestClock`. Failures are swallowed
+    // Heartbeat emitter — publishes `system.agent.heartbeat` every 10s per
+    // live agent. `Clock.currentTimeMillis` is sampled once per tick so all
+    // heartbeats in a tick share a timestamp (same observation moment), and
+    // all agents' heartbeats ship in a single batched append — one RPC
+    // instead of N when the store is remote. Failures are swallowed
     // (registry digest mismatches, transient store errors, …) — one bad
     // emit must not kill the fiber; heartbeats are best-effort telemetry.
     yield* Effect.forkScoped(
@@ -121,20 +123,21 @@ export const supervise = (
         Effect.sleep(Duration.seconds(10)).pipe(
           Effect.zipRight(
             Effect.gen(function* () {
+              const timestamp = yield* Clock.currentTimeMillis
+              const heartbeats: Array<EventInput> = []
               for (const [agentId, ctx] of cursorCtx.entries()) {
                 const cursor = yield* Ref.get(ctx.pendingCursor)
-                const timestamp = yield* Clock.currentTimeMillis
-                yield* store
-                  .append([
-                    {
-                      type: "system.agent.heartbeat",
-                      actor: agentId as never,
-                      source: "system",
-                      payload: { agentId, cursor, timestamp },
-                    },
-                  ])
-                  .pipe(Effect.catchAll(() => Effect.void))
+                heartbeats.push({
+                  type: SystemAgentHeartbeat.type,
+                  actor: agentId as never,
+                  source: "system",
+                  payload: { agentId, cursor, timestamp },
+                })
               }
+              if (heartbeats.length === 0) return
+              yield* store
+                .append(heartbeats)
+                .pipe(Effect.catchAll(() => Effect.void))
             }),
           ),
         ),
