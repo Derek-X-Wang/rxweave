@@ -57,6 +57,24 @@
         "vitest": "^2.1.0",
       },
     },
+    "packages/runtime": {
+      "name": "@rxweave/runtime",
+      "version": "0.1.0",
+      "dependencies": {
+        "@effect/platform": "^0.96.0",
+        "@effect/platform-bun": "^0.89.0",
+        "@rxweave/core": "workspace:*",
+        "@rxweave/schema": "workspace:*",
+        "effect": "^3.11.0",
+      },
+      "devDependencies": {
+        "@effect/vitest": "^0.17.0",
+        "@rxweave/store-memory": "workspace:*",
+        "@types/node": "^22.10.0",
+        "typescript": "^5.5.4",
+        "vitest": "^2.1.0",
+      },
+    },
     "packages/schema": {
       "name": "@rxweave/schema",
       "version": "0.1.0",
@@ -285,6 +303,8 @@
     "@rxweave/protocol": ["@rxweave/protocol@workspace:packages/protocol"],
 
     "@rxweave/reactive": ["@rxweave/reactive@workspace:packages/reactive"],
+
+    "@rxweave/runtime": ["@rxweave/runtime@workspace:packages/runtime"],
 
     "@rxweave/schema": ["@rxweave/schema@workspace:packages/schema"],
 

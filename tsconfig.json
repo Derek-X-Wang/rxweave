@@ -6,6 +6,7 @@
     { "path": "./packages/protocol" },
     { "path": "./packages/store-memory" },
     { "path": "./packages/store-file" },
-    { "path": "./packages/reactive" }
+    { "path": "./packages/reactive" },
+    { "path": "./packages/runtime" }
   ]
 }
