@@ -10,6 +10,7 @@ import { FileSystem } from "@effect/platform"
 import { BunFileSystem } from "@effect/platform-bun"
 import { minimatch } from "minimatch"
 import { Schema } from "effect"
+import * as Path from "node:path"
 import {
   type Cursor,
   EventEnvelope,
@@ -42,7 +43,10 @@ export const FileStore = {
       EventStore,
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem
-        yield* fs.makeDirectory(opts.path.replace(/\/[^/]+$/, ""), { recursive: true })
+        const dir = Path.dirname(opts.path)
+        if (dir && dir !== ".") {
+          yield* fs.makeDirectory(dir, { recursive: true })
+        }
         const exists = yield* fs.exists(opts.path)
         if (!exists) yield* fs.writeFile(opts.path, new Uint8Array())
 
@@ -50,6 +54,7 @@ export const FileStore = {
         const store = yield* Ref.make<ReadonlyArray<EventEnvelope>>(recovered.events)
         const writer = yield* makeWriter(opts.path)
         const pubsub = yield* PubSub.sliding<EventEnvelope>(1024)
+        const lock = yield* Effect.makeSemaphore(1)
         const ulid = yield* Ulid
 
         if (recovered.truncatedBytes > 0) {
@@ -74,8 +79,12 @@ export const FileStore = {
                 envelopes.push(envelope)
               }
               yield* writer.appendLines(envelopes.map((e) => encode(e)))
-              yield* Ref.update(store, (arr) => [...arr, ...envelopes])
-              for (const env of envelopes) yield* pubsub.publish(env)
+              yield* lock.withPermits(1)(
+                Effect.gen(function* () {
+                  yield* Ref.update(store, (arr) => [...arr, ...envelopes])
+                  for (const env of envelopes) yield* pubsub.publish(env)
+                }),
+              )
               return envelopes as ReadonlyArray<EventEnvelope>
             }).pipe(
               Effect.mapError(
@@ -86,8 +95,13 @@ export const FileStore = {
           subscribe: ({ cursor, filter }) =>
             Stream.unwrapScoped(
               Effect.gen(function* () {
-                const snapshot = yield* Ref.get(store)
-                const subscriber = yield* pubsub.subscribe
+                const [snapshot, subscriber] = yield* lock.withPermits(1)(
+                  Effect.gen(function* () {
+                    const arr = yield* Ref.get(store)
+                    const sub = yield* pubsub.subscribe
+                    return [arr, sub] as const
+                  }),
+                )
                 const snapshotMax = snapshot.at(-1)?.id
                 const matches = matchFilter(filter)
 
