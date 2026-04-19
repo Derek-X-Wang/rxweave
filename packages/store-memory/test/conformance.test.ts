@@ -1,4 +1,4 @@
-import { runConformance } from "../../core/src/testing/conformance.js"
+import { runConformance } from "@rxweave/core/testing"
 import { MemoryStore } from "../src/index.js"
 
 runConformance({ name: "MemoryStore", layer: MemoryStore.Live })

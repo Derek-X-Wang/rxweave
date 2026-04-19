@@ -11,7 +11,7 @@
   "files": ["dist"],
   "engines": { "node": ">=22", "bun": ">=1.1" },
   "scripts": {
-    "build": "bun build ./src/index.ts ./src/testing/conformance.ts --target=node --format=esm --outdir=dist --splitting && tsc --emitDeclarationOnly --outDir dist",
+    "build": "bun build ./src/index.ts ./src/testing/conformance.ts --target=node --format=esm --outdir=dist --splitting --packages=external && tsc --emitDeclarationOnly --outDir dist",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "lint": "oxlint src test"
