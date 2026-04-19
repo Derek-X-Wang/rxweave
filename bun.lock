@@ -13,6 +13,19 @@
         "vitest": "^2.1.0",
       },
     },
+    "packages/schema": {
+      "name": "@rxweave/schema",
+      "version": "0.1.0",
+      "dependencies": {
+        "effect": "^3.11.0",
+      },
+      "devDependencies": {
+        "@effect/vitest": "^0.17.0",
+        "@types/node": "^22.10.0",
+        "typescript": "^5.5.4",
+        "vitest": "^2.1.0",
+      },
+    },
   },
   "packages": {
     "@effect/vitest": ["@effect/vitest@0.17.8", "", { "peerDependencies": { "effect": "^3.12.12", "vitest": "^2.0.5" } }, "sha512-FPI+mgiCzR950y1nnOEB2FPPY3LnCSwqg+RZ8EyWSzqb1IU1iDmVGxfxgtK3MM9obubXcVk5e1hBz0+/485olQ=="],
@@ -130,6 +143,8 @@
     "@rollup/rollup-win32-x64-gnu": ["@rollup/rollup-win32-x64-gnu@4.60.2", "", { "os": "win32", "cpu": "x64" }, "sha512-qdAzEULD+/hzObedtmV6iBpdL5TIbKVztGiK7O3/KYSf+HIzU257+MX1EXJcyIiDbMAqmbwaufcYPvyRryeZtA=="],
 
     "@rollup/rollup-win32-x64-msvc": ["@rollup/rollup-win32-x64-msvc@4.60.2", "", { "os": "win32", "cpu": "x64" }, "sha512-Nd/SgG27WoA9e+/TdK74KnHz852TLa94ovOYySo/yMPuTmpckK/jIF2jSwS3g7ELSKXK13/cVdmg1Z/DaCWKxA=="],
+
+    "@rxweave/schema": ["@rxweave/schema@workspace:packages/schema"],
 
     "@standard-schema/spec": ["@standard-schema/spec@1.1.0", "", {}, "sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w=="],
 
