@@ -4,11 +4,11 @@
   "type": "module",
   "main": "./dist/src/index.js",
   "types": "./dist/src/index.d.ts",
-  "bin": { "rxweave": "./bin/rxweave.js" },
+  "bin": { "rxweave": "./dist/bin/rxweave.js" },
   "exports": {
     ".": { "types": "./dist/src/index.d.ts", "default": "./dist/src/index.js" }
   },
-  "files": ["dist", "bin"],
+  "files": ["dist"],
   "engines": { "node": ">=22", "bun": ">=1.1" },
   "scripts": {
     "build": "bun build ./src/index.ts ./bin/rxweave.ts --target=node --format=esm --outdir=dist --splitting --packages=external && tsc --emitDeclarationOnly --outDir dist",
