@@ -2,11 +2,7 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "noEmit": true,
-    "types": ["node"],
-    "baseUrl": ".",
-    "paths": {
-      "@rxweave/cli": ["../../packages/cli/src/index.ts"]
-    }
+    "types": ["node"]
   },
   "include": ["**/*.ts"],
   "references": [
