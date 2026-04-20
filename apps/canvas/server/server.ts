@@ -44,18 +44,25 @@ await runtime.runPromise(registerSchemas)
 // startup path when the key is missing.
 if (process.env.OPENROUTER_API_KEY || process.env.ANTHROPIC_API_KEY) {
   const { suggesterAgent } = await import("./agents/suggester.js")
-  // defineLlmAgent returns AgentDef<never>; supervise wants
-  // AgentDef<any>. The parameter is only used when reduce is set,
-  // which llm agents never use — cast is safe.
-  runtime.runFork(
-    supervise([suggesterAgent as unknown as AgentDef<any>]) as Effect.Effect<
-      void,
-      unknown,
-      EventStore | EventRegistry | AgentCursorStore
-    >,
-  )
+  // `supervise` forks the heartbeat emitter via Effect.forkScoped and
+  // so requires a Scope in its requirement set. ManagedRuntime only
+  // provides the layers passed to make() — no Scope — so wrap in
+  // Effect.scoped to fresh-create one tied to this fork's lifetime.
+  const supervisedEffect = Effect.scoped(
+    supervise([suggesterAgent as unknown as AgentDef<any>]).pipe(
+      Effect.tapErrorCause((cause) =>
+        Effect.sync(() =>
+          console.error(
+            "[canvas] supervise: DIED",
+            (cause as { toString?: () => string }).toString?.() ?? cause,
+          ),
+        ),
+      ),
+    ),
+  ) as Effect.Effect<void, unknown, EventStore | EventRegistry | AgentCursorStore>
+  runtime.runFork(supervisedEffect)
   const provider = process.env.OPENROUTER_API_KEY ? "openrouter" : "anthropic"
-  console.log(`[canvas] LLM suggester agent active (${provider})`)
+  console.log(`[canvas] LLM suggester agent forked (${provider})`)
 } else {
   console.log(
     "[canvas] LLM suggester: inactive (set OPENROUTER_API_KEY or ANTHROPIC_API_KEY to enable)",

@@ -117,23 +117,27 @@ const baseAgent = defineLlmAgent({
 export const suggesterAgent: AgentDef = {
   ...baseAgent,
   handle: (event: EventEnvelope) =>
-    baseAgent.handle!(event).pipe(
-      Effect.tap((result) =>
-        Effect.sync(() => {
-          const count = Array.isArray(result) ? result.length : 0
-          if (count > 0)
-            log(
-              `event ${event.id.slice(0, 12)} emitted ${count} note(s)`,
+    Effect.gen(function* () {
+      log(
+        `handle entered for event ${event.id.slice(0, 12)} (type=${event.type}, actor=${event.actor})`,
+      )
+      return yield* baseAgent.handle!(event).pipe(
+        Effect.tap((result) =>
+          Effect.sync(() => {
+            const count = Array.isArray(result) ? result.length : 0
+            if (count > 0)
+              log(`event ${event.id.slice(0, 12)} emitted ${count} note(s)`)
+            else log(`event ${event.id.slice(0, 12)} no notes emitted`)
+          }),
+        ),
+        Effect.tapError((err) =>
+          Effect.sync(() => {
+            console.error(
+              `[suggester] event ${event.id.slice(0, 12)} errored:`,
+              err,
             )
-        }),
-      ),
-      Effect.tapError((err) =>
-        Effect.sync(() => {
-          console.error(
-            `[suggester] event ${event.id.slice(0, 12)} errored:`,
-            err,
-          )
-        }),
-      ),
-    ),
+          }),
+        ),
+      )
+    }),
 }
