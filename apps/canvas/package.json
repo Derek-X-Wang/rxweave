@@ -21,6 +21,7 @@
     "@rxweave/store-file": "workspace:^",
     "@rxweave/llm": "workspace:^",
     "@ai-sdk/anthropic": "^2.0.0",
+    "@openrouter/ai-sdk-provider": "^1.2.0",
     "ai": "^5.0.0"
   },
   "devDependencies": {

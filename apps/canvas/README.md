@@ -37,11 +37,17 @@ Browser (tldraw)  ─user edits──▶  POST /api/events   ┐
 
 ## LLM suggester (opt-in)
 
+Either provider works; OpenRouter is preferred when both env vars are set.
+
 ```bash
+# OpenRouter (recommended — one key, usage caps)
+OPENROUTER_API_KEY=sk-or-... bun run dev
+
+# Anthropic direct
 ANTHROPIC_API_KEY=sk-ant-... bun run dev
 ```
 
-The server forks `supervise([suggesterAgent])` when the key is present. The agent watches `canvas.shape.upserted` events; when a user creates a text/geo shape it proposes related concept nodes and emits them back through the stream — they appear in the browser with no special path.
+The server forks `supervise([suggesterAgent])` when either key is present. The agent watches `canvas.shape.upserted` events; when a user creates a text-labelled shape it proposes related concept notes and emits them back through the stream — they appear in the browser with no special path.
 
 ## Events
 

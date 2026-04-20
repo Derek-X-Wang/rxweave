@@ -1,6 +1,19 @@
 import { Effect, Schema } from "effect"
+import type { LanguageModel } from "ai"
 import { anthropic } from "@ai-sdk/anthropic"
+import { createOpenRouter } from "@openrouter/ai-sdk-provider"
 import { defineLlmAgent, tool } from "@rxweave/llm"
+
+// Prefer OpenRouter (one key, many providers, usage caps) when
+// OPENROUTER_API_KEY is set; fall back to a direct Anthropic key.
+// OpenRouter and Anthropic use slightly different model-id slugs —
+// OpenRouter is `anthropic/claude-sonnet-4.5`, Anthropic-direct is
+// `claude-sonnet-4-5`.
+const model: LanguageModel = process.env.OPENROUTER_API_KEY
+  ? createOpenRouter({ apiKey: process.env.OPENROUTER_API_KEY })(
+      "anthropic/claude-sonnet-4.5",
+    )
+  : anthropic("claude-sonnet-4-5")
 
 // Extract text from a tldraw shape. `geo`, `note`, and `text` shapes
 // all store their label in `props.text`; `richText` (TipTap JSON) is
@@ -16,7 +29,7 @@ const extractText = (record: unknown): string | null => {
 export const suggesterAgent = defineLlmAgent({
   id: "canvas-suggester",
   on: { types: ["canvas.shape.upserted"] },
-  model: anthropic("claude-sonnet-4-5"),
+  model,
   systemPrompt:
     `You are a brainstorming partner on a shared whiteboard. When the user ` +
     `writes a labelled shape, suggest 1-2 related concepts via suggestNote. ` +

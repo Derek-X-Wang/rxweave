@@ -42,7 +42,7 @@ await runtime.runPromise(registerSchemas)
 // Opt-in LLM suggester agent. Gated on ANTHROPIC_API_KEY so the canvas
 // works standalone. Dynamic import keeps @ai-sdk/anthropic out of the
 // startup path when the key is missing.
-if (process.env.ANTHROPIC_API_KEY) {
+if (process.env.OPENROUTER_API_KEY || process.env.ANTHROPIC_API_KEY) {
   const { suggesterAgent } = await import("./agents/suggester.js")
   // defineLlmAgent returns AgentDef<never>; supervise wants
   // AgentDef<any>. The parameter is only used when reduce is set,
@@ -54,10 +54,11 @@ if (process.env.ANTHROPIC_API_KEY) {
       EventStore | EventRegistry | AgentCursorStore
     >,
   )
-  console.log("[canvas] LLM suggester agent active")
+  const provider = process.env.OPENROUTER_API_KEY ? "openrouter" : "anthropic"
+  console.log(`[canvas] LLM suggester agent active (${provider})`)
 } else {
   console.log(
-    "[canvas] LLM suggester: inactive (set ANTHROPIC_API_KEY to enable)",
+    "[canvas] LLM suggester: inactive (set OPENROUTER_API_KEY or ANTHROPIC_API_KEY to enable)",
   )
 }
 
