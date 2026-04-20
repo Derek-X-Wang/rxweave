@@ -72,30 +72,54 @@ const baseAgent = defineLlmAgent({
       log(`event ${event.id.slice(0, 12)} skip: no text`)
       return "Shape has no text, skip."
     }
-    const pos = record as { x?: number; y?: number }
     log(`event ${event.id.slice(0, 12)} prompt: "${text}"`)
-    return `User labelled a shape with: "${text}" at (${pos.x ?? 0}, ${pos.y ?? 0}).`
+    // We don't tell the model about position/size — it only chooses
+    // text + a vertical stacking slot. The handler does the geometry
+    // so notes can't overlap the triggering shape regardless of model
+    // choices.
+    return (
+      `User labelled a shape with: "${text}". ` +
+      `Suggest 1-2 concise related concepts via suggestNote. ` +
+      `Pass stackIndex=0 for the first suggestion, stackIndex=1 for ` +
+      `the second (they'll render stacked vertically to the right of ` +
+      `the user's shape).`
+    )
   },
   tools: {
     suggestNote: tool({
-      description: "Place a concept note adjacent to the user's shape.",
+      description:
+        "Propose a concept note near the user's shape. stackIndex=0 goes " +
+        "immediately to the right; stackIndex=1+ stacks below that.",
       schema: Schema.Struct({
         text: Schema.String.pipe(Schema.maxLength(80)),
-        offsetX: Schema.Number.pipe(Schema.between(-400, 400)),
-        offsetY: Schema.Number.pipe(Schema.between(-400, 400)),
+        stackIndex: Schema.Number.pipe(Schema.between(0, 4)),
       }),
       handler: (args, event) => {
         const triggering = (event.payload as {
-          record: { x: number; y: number }
+          record: {
+            x: number
+            y: number
+            props?: { w?: number; h?: number }
+          }
         }).record
+        // Place notes immediately to the right of the triggering
+        // shape's bounding box. Use the shape's own width (defaulting
+        // to 200 for shapes that don't carry w — e.g. "draw" shapes)
+        // so notes never overlap the triggering shape. Vertical
+        // spacing of 160px fits tldraw's default note size with a
+        // comfortable gap.
+        const NOTE_WIDTH = 200
+        const NOTE_HEIGHT = 160
+        const GAP = 40
+        const shapeW = triggering.props?.w ?? NOTE_WIDTH
+        const x = triggering.x + shapeW + GAP
+        const y = triggering.y + args.stackIndex * NOTE_HEIGHT
         // tldraw v4 store.put validates records against its schema and
         // silently drops shapes missing required fields. A "note" shape
         // needs: parentId, index, rotation, isLocked, opacity, meta at
         // the record level, and a full set of note-specific props
         // (including richText in TipTap JSON form). Minimal records
         // look accepted (no error on put) but nothing renders.
-        const x = triggering.x + args.offsetX
-        const y = triggering.y + args.offsetY
         const note = {
           typeName: "shape" as const,
           id: `shape:sugg-${crypto.randomUUID()}`,
