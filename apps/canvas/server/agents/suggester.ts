@@ -171,6 +171,15 @@ export const suggesterAgent: AgentDef = {
   ...baseAgent,
   handle: (event: EventEnvelope) =>
     Effect.gen(function* () {
+      // Short-circuit agent-authored events BEFORE any LLM call.
+      // formatPrompt already checks actor === "human" and returns
+      // "skip", but the LLM still runs on that prompt — one call
+      // per agent-authored round-trip, all wasted. Pre-filtering
+      // here skips the LLM entirely.
+      if (event.actor !== "human") {
+        log(`event ${event.id.slice(0, 12)} skip (agent-authored, no LLM call)`)
+        return []
+      }
       log(
         `handle entered for event ${event.id.slice(0, 12)} (type=${event.type}, actor=${event.actor})`,
       )
