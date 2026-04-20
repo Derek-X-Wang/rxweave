@@ -29,10 +29,11 @@ jobs:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
 
-      # Trusted Publishing requires npm >= 11.5.1. GitHub runners may
-      # ship an older npm; install the latest before publishing.
+      # Trusted Publishing requires npm >= 11.5.1. Node 22's bundled
+      # npm is 10.9.2 — upgrade. `--force` avoids the self-replace
+      # `promise-retry` MODULE_NOT_FOUND bug when npm updates itself.
       - name: Upgrade npm
-        run: npm install -g npm@latest
+        run: npm install -g npm@latest --force
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
