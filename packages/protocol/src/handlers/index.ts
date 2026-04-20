@@ -1,2 +1,5 @@
 export * from "./Append.js"
 export * from "./Subscribe.js"
+export * from "./GetById.js"
+export * from "./Query.js"
+export * from "./QueryAfter.js"
