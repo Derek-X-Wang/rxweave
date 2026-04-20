@@ -1,8 +1,8 @@
 # RxWeave CLI + Unified Stream Server — Design Spec
 
 **Date:** 2026-04-20
-**Status:** Brainstorming phase complete. Awaiting user review of this spec, then writing-plans.
-**Authors:** Derek Wang + Claude (brainstorming session) with Codex (independent review of CLI surface)
+**Status:** Brainstorming phase complete. Codex full-spec review incorporated (2026-04-20). Awaiting user review of revised spec, then writing-plans.
+**Authors:** Derek Wang + Claude (brainstorming session) with Codex (two independent reviews: CLI surface, then full-spec P0/P1/P2 pass)
 
 **Builds on:** `2026-04-18-rxweave-design.md` (v0.1 + v0.2 shipped), the `@rxweave/llm` + canvas demo work (v0.3.0 shipped 2026-04-20).
 
@@ -73,6 +73,14 @@ export const startServer: (opts: {
 - Does not run agents. Agents are the embedder's concern; `supervise([...])` is a separate Effect forked in the embedder's scope.
 - Does not manage users, quotas, or billing — localhost model is single-user.
 
+**Handler convergence with cloud (P1 from Codex review):** the cloud server (Convex) has accumulated subtle handler logic — subscribe polling invariants, QueryAfter semantics — through bug fixes. Re-implementing independently in `@rxweave/server` invites drift. The convergence strategy for this spec:
+
+- Extract runtime-agnostic portions into a new module `packages/protocol/src/handlers/` (part of `@rxweave/protocol`). These take an `EventStore` + `EventRegistry` service and produce RpcGroup handler implementations in pure Effect, no backend-specific APIs.
+- `@rxweave/server` (Bun) imports them directly.
+- Cloud (Convex) imports them where possible, wraps them in Convex's `ctx.db.query`/`ctx.runMutation` adapters where not.
+- Convergence gate: both servers pass the 10-case conformance harness (already exists in `@rxweave/core/testing/conformance.ts`). Any divergence in semantics surfaces as a conformance failure.
+- Cloud-specific concerns (tenant resolution, rate-limits) stay in the cloud repo; they're not part of the shared handlers.
+
 ### 3.2 Topology
 
 ```
@@ -103,9 +111,10 @@ Changes:
 
 - **`server.ts`** — replaces the manual `Bun.serve` + `/api/events` + `/api/subscribe` block with a `startServer()` call from `@rxweave/server`. Same port (5301), but now the RPC protocol. Suggester agent wiring unchanged.
 - **`RxweaveBridge.tsx`** — `fetch POST` + `EventSource` are swapped for `@rxweave/store-cloud` configured with `url: "http://localhost:5301"`. The bridge's tldraw↔rxweave glue (`store.listen({source:"user"})` → `append`; SSE → `mergeRemoteChanges`) stays identical because `@rxweave/store-cloud` exposes the same `EventStore` service tag as the server side uses.
+- **`@rxweave/store-cloud` API change (prerequisite):** the current API requires `token: () => string` — mandatory bearer header on every request. For local-embedded mode (browser + server same origin, no tenant), there's no token to supply. Change the API to `token?: () => string | undefined` so `Authorization` headers are only emitted when the provider returns a defined value. This is a minor breaking change for existing cloud consumers; they already pass tokens so it's source-compatible. Update needed before the canvas browser can use `store-cloud` against the unauthed local default.
 - **Schemas, suggester agent, tldraw, React, Vite, dev workflow** — unchanged.
 
-Browser bundle grows by `@rxweave/store-cloud` + its transitive Effect-rpc deps (estimate ~80-150 KB gzipped). Acceptable for the demo; to be measured.
+Browser bundle grows by `@rxweave/store-cloud` + its transitive Effect-rpc deps (estimate ~80-150 KB gzipped). Acceptable for the demo; to be measured against a budget (see §11).
 
 ---
 
@@ -116,7 +125,7 @@ Nine top-level commands plus two subcommand groups. Ordered by primary use case:
 ### 4.1 Setup / lifecycle
 
 - **`rxweave init`** — scaffold `rxweave.config.ts`, `.rxweave/`, `.env.example`. Unchanged from v0.1.
-- **`rxweave serve`** *(new)* — start a local `@rxweave/server` instance. Primitive, stable. Flags: `--port <n>` (default 5300), `--host <ip>` (default 127.0.0.1), `--store file|memory` (default file), `--path <file>` (default `./.rxweave/stream.jsonl`), `--auth bearer --token <hash>` (opt-in). Prints `[rxweave] stream on http://<host>:<port>` and the recommended `RXWEAVE_URL` export.
+- **`rxweave serve`** *(new)* — start a local `@rxweave/server` instance. Primitive, stable. Flags: `--port <n>` (default 5300), `--host <ip>` (default 127.0.0.1), `--store file|memory` (default file), `--path <file>` (default `./.rxweave/stream.jsonl`), `--no-auth` (explicit dev mode; otherwise a token is auto-generated — see §5.4), `--token <hash>` (use a caller-supplied token rather than auto-generated). Prints the URL + the recommended `RXWEAVE_URL` and `RXWEAVE_TOKEN` export lines on startup.
 - **`rxweave dev`** — opinionated preset: `serve` + `supervise(config.agents)` + config hot-reload. Unchanged in semantics; now runs the unified server under the hood.
 
 ### 4.2 Writes
@@ -154,7 +163,8 @@ Nine top-level commands plus two subcommand groups. Ordered by primary use case:
 
 ### 5.1 Actor
 
-- Type: branded string (`ActorId`), no schema-imposed structure.
+- Type: branded string (`ActorId`). v0.3 schema is only `minLength(1)` — too permissive for the evolution path ahead.
+- **New constraint (added by this spec):** `ActorId` pattern becomes `/^[a-zA-Z0-9_.-]+(:[a-zA-Z0-9_.-]+)?$/` — alphanum plus `_`, `.`, `-`, with one optional `:` separator reserved for the future `<user-id>:<agent-type>` convention. Reserved prefixes `human`, `system`, `rxweave` documented. Existing events are grandfathered (no migration required); new emits validate.
 - v1 convention: free-form single tokens — `"human"`, `"claude-code"`, `"canvas-suggester"`, `"claude-reviewer"`.
 - Sourced (per CLI invocation) from: `--actor` flag → `RXWEAVE_ACTOR` env → `defaultActor` in `rxweave.config.ts` → error if none.
 - The canvas browser bridge stamps `actor: "human"` client-side on every emit. (In v1 localhost, the server can't distinguish clients; a `defaultActor` can be configured by the app. When cloud multi-user lands, the server will override client-supplied actors with a token-derived prefix per §5.2.)
@@ -180,16 +190,31 @@ defineConfig({
 ```
 
 Resolution order for URL: `RXWEAVE_URL` env → config `serverUrl` → `http://localhost:5300`.
-For token: `RXWEAVE_TOKEN` env → config → none.
+For token: `RXWEAVE_TOKEN` env → config → auto-read from `.rxweave/serve.token` if present → none.
+
+### 5.4 Auth (revised per Codex P1)
+
+- **Default: on, with auto-generated ephemeral token.** `rxweave serve` generates a random 256-bit token at startup, writes it to `.rxweave/serve.token` (mode `0600`, added to `.gitignore` template by `rxweave init`), and prints the export line:
+  ```
+  [rxweave] stream on http://localhost:5300
+  [rxweave] export RXWEAVE_TOKEN=rxk_<hex>
+  ```
+  Rationale: any local process (including a malicious npm dep) can reach `127.0.0.1`. A write-capable event stream on the loopback interface is too open to default wide-open.
+- **Explicit relaxed mode:** `rxweave serve --no-auth` skips token generation — for ephemeral dev sessions where the host is known-clean. Prints a warning at startup.
+- **Fixed token:** `rxweave serve --token <hash>` uses a caller-supplied token (e.g. CI, shared dev envs).
+- **Binding + auth interlock:** `127.0.0.1` default. `--host 0.0.0.0` requires auth to be on; the combo `--host 0.0.0.0 --no-auth` is an explicit startup error (no footgun).
+- **Embedded mode (apps/web):** apps that embed `@rxweave/server` can pass `auth: { bearer: [hash(...)] }` at `startServer()` time, or read the ephemeral `.rxweave/serve.token` file for parity with the standalone `rxweave serve` UX. The canvas embedding reads the token file.
+- **Client-side:** `RXWEAVE_TOKEN` env var adds `Authorization: Bearer ...`. With the `@rxweave/store-cloud` API change in §3.3 (token now optional), omitting the token = no Authorization header — which is how `--no-auth` server mode works end-to-end.
 
 ---
 
 ## 6. Schema registration
 
 - Server starts with an empty `EventRegistry` (unless the embedder passes a pre-populated layer).
-- Registration is lazy and driven by client emits: the existing `Append` RPC carries the client's registry digest. On divergence, the server responds `AppendError.RegistryOutOfDate { missingTypes }` and the client auto-pushes + retries once. This flow already exists in `@rxweave/store-cloud` / `@rxweave/protocol` v0.2 — it applies unchanged.
-- Apps that want to pre-register (so the first emit doesn't pay a round-trip) call `registrySync({ push: [...mySchemas] })` explicitly at startup.
-- Conflicts: two clients registering the same `type` with differing payload schemas → server returns `DuplicateEventType` with the colliding hash. Up to the clients to reconcile.
+- **Required client behaviour (corrected per Codex P0):** clients call `registrySync({ push: [...mySchemas] })` explicitly on first connect, before any `Append`. The existing `@rxweave/store-cloud.append` path does **not** auto-retry on `AppendError.RegistryOutOfDate` — the helper in `@rxweave/store-cloud/src/RegistrySync.ts` is separate. Earlier spec text claiming auto-retry was wrong; correcting here. Explicit is the v1 contract.
+- **Future enhancement (out of scope):** adding an auto-push-and-retry wrapper inside `CloudStore.append` would remove the need for explicit startup sync. Tracked as a follow-up; not required for this spec.
+- **Observability requirement (per Codex P2 #6):** when the server rejects a duplicate registration with conflicting digests (`DuplicateEventType`), it MUST log at `warn` level with: event `type`, local digest, remote digest, and caller identity (actor if known, else source IP + user-agent). Accepted as a success-criteria gate in §11.
+- **Pre-population at embed time:** apps embedding `@rxweave/server` can pre-populate the registry layer via `EventRegistry.Live.pipe(registerAll([...schemas]))` so the first `registrySync` push is a no-op and the server knows the full schema set from boot.
 
 ---
 
@@ -241,33 +266,68 @@ Multi-agent is the same pattern with different `RXWEAVE_ACTOR` per session. Mult
 
 ## 9. Non-goals (explicit)
 
-- **Multi-user identity.** v1 stays free-form actor strings. Evolution path documented in §5.2.
+- **Multi-user identity.** v1 stays constrained-but-free-form actor strings. Evolution path documented in §5.2.
 - **Voice / video / perception event namespaces.** This spec delivers the transport. Domain schemas (`voice.*`, `video.*`, `user.presence.*`) get their own specs.
-- **`rxweave replay <from> <to>`, `rxweave diff <a> <b>`, `rxweave drop --types ... --dry-run`.** Codex flagged these as genuinely useful; none are blocking CLI-agent collaboration. Parked.
+- **`rxweave replay <from> <to>`, `rxweave diff <a> <b>`, `rxweave drop --types ... --dry-run`.** Codex flagged these as genuinely useful; none are blocking CLI-agent collaboration. Parked — but see §9.1 for the recovery-docs obligation this creates.
 - **MCP server / native Claude Code tools.** The CLI is sufficient for v1. If shell-out latency becomes a bottleneck, a thin MCP wrapper over the CLI's commands is a future add.
 - **Auto-start-if-missing.** `rxweave stream` against a dead server returns a clean error rather than silently starting one. Phase 2 may add this behind a flag — explicit beats magic for v1.
+- **Auto-retry on `RegistryOutOfDate` inside `CloudStore.append`.** Tracked as follow-up per §6; explicit startup `registrySync` is the v1 contract.
+
+### 9.1 Obligation created by parking `replay`
+
+Since `replay` is deferred, the cursor-recovery workflow must be first-class documentation and have coverage:
+
+- Cookbook entry: "resume an agent after crash" — shows `rxweave cursor` saved at checkpoint → restart → `rxweave stream --since <saved-cursor> --follow` to resume.
+- Cookbook entry: "restore state from a snapshot" — shows `rxweave stream --fold canvas > snapshot.json` + a recipe to re-emit events for seeding from snapshot via `rxweave import`.
+- Integration test in CLI smoke covering checkpoint → restart → resume without duplicate or skipped events.
 
 ---
 
 ## 10. Scope summary
 
-One new package: `@rxweave/server`.
-Seven CLI changes: `serve`, `import`, `cursor`, `stream --fold`, `stream --count`, `stream --last` (renamed from `--tail`), `agent exec` (renamed from `agent run`).
-Four CLI drops: `count`, `last`, `head`, `store stats`.
-One app refactor: `apps/canvas/` → `apps/web/`, embeds the unified server, browser switches to `@rxweave/store-cloud`.
-Zero schema changes; existing `@rxweave/protocol` + `@rxweave/schema` + `@rxweave/store-cloud` support this unchanged.
+**New packages / modules:**
+- `@rxweave/server` — local RPC server library.
+- `packages/protocol/src/handlers/` — runtime-agnostic RpcGroup handler core extracted from what currently lives as independent implementations in cloud (Convex) and `@rxweave/server` (Bun). Shared by both to prevent drift.
 
-Roughly the same total surface area as v0.2.0 (the cloud adapter). Manageable for one plan + implementation pass.
+**Package API changes:**
+- `@rxweave/store-cloud`: `token` becomes optional. Minor breaking for source compat; existing cloud consumers continue to work.
+- `@rxweave/schema`: `ActorId` gets a validation regex (see §5.1). Existing events grandfathered.
+
+**CLI changes:** seven additions/renames (`serve`, `import`, `cursor`, `stream --fold`, `stream --count`, `stream --last` ← `--tail`, `agent exec` ← `agent run`); four drops (`count`, `last`, `head`, `store stats`).
+
+**App refactor:** `apps/canvas/` → `apps/web/`, embeds `@rxweave/server`, browser switches to `@rxweave/store-cloud`.
+
+**Zero schema changes at the event-envelope level** — `EventEnvelope` / `EventInput` / `Cursor` / `Filter` are unchanged.
+
+**Obligations created:**
+- Cursor-recovery cookbook + integration tests (§9.1) because `replay` is parked.
+- Bundle-budget gate (§11) because adding `store-cloud` to the browser.
+- Duplicate-schema observability test (§11) per Codex P2.
+
+Roughly 1.5x the total surface area of v0.2.0 (cloud adapter) — larger than initially estimated due to shared handler extraction and cursor-recovery docs. Still one plan's worth of work, but implementers should expect ~2 weeks rather than 1.
 
 ---
 
 ## 11. Success criteria
 
+**Happy path:**
 - `@rxweave/server` passes the 10-case conformance harness.
 - `apps/web/` (renamed canvas) runs end-to-end with the unified server: browser draws → events in `stream --follow` → CLI `emit` renders in browser.
 - `rxweave stream --fold canvas` against the running server outputs a valid tldraw store snapshot (nodes + bindings).
 - `rxweave cursor` returns a non-empty `EventId`-formatted string on a non-empty stream.
 - Claude Code can complete the §7 workflow end-to-end against a freshly-started `apps/web` instance without touching anything except its own shell.
+
+**Reliability (added per Codex P2 #8):**
+- **Reconnect/resume correctness:** a long-lived `rxweave stream --follow` surviving a server restart loses no events and emits no duplicates. Test: kill `rxweave serve`, emit N events while down, restart, verify client receives the N events (via cursor checkpoint on the client side).
+- **Server restart recovery:** `rxweave serve` + `FileStore` path resume cleanly from the on-disk `.rxweave/stream.jsonl` after a `SIGKILL` (covered by existing `@rxweave/store-file` cold-start recovery tests; add a test at the server layer).
+- **Cursor-recovery cookbook:** the two recipes in §9.1 each have an executable integration test.
+
+**Observability (added per Codex P2 #6):**
+- When `DuplicateEventType` is rejected, the server log line includes `type`, local digest, remote digest, and caller identity (actor or source IP). Asserted in a server-level test.
+
+**Compat / perf (added per Codex P2 #8):**
+- **Browser bundle budget:** `apps/web`'s production build grows by at most **200 KB gzipped** due to `@rxweave/store-cloud` adoption. Measured via `vite build`'s reporter output; failing this gate is a blocker.
+- **CLI payload budget:** `rxweave` binary (Bun-compiled) grows by at most **500 KB** due to server-library inclusion. Measured via `ls -l dist/rxweave`; failing this is a reviewable issue, not a blocker (server code only links when `serve`/`dev` subcommands are invoked, so size impact depends on bundler tree-shaking).
 
 ---
 
