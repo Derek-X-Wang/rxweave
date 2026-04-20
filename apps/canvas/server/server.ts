@@ -2,7 +2,7 @@ import { Effect, Layer, ManagedRuntime, Stream } from "effect"
 import { EventStore } from "@rxweave/core"
 import { FileStore } from "@rxweave/store-file"
 import { EventRegistry, type EventDef } from "@rxweave/schema"
-import { AgentCursorStore } from "@rxweave/runtime"
+import { AgentCursorStore, supervise, type AgentDef } from "@rxweave/runtime"
 import {
   CanvasBindingDeleted,
   CanvasBindingUpserted,
@@ -39,8 +39,27 @@ const runtime = ManagedRuntime.make(AppLive)
 
 await runtime.runPromise(registerSchemas)
 
-// Phase 2 (LLM suggester agent) is wired here — see README. Not yet
-// implemented.
+// Opt-in LLM suggester agent. Gated on ANTHROPIC_API_KEY so the canvas
+// works standalone. Dynamic import keeps @ai-sdk/anthropic out of the
+// startup path when the key is missing.
+if (process.env.ANTHROPIC_API_KEY) {
+  const { suggesterAgent } = await import("./agents/suggester.js")
+  // defineLlmAgent returns AgentDef<never>; supervise wants
+  // AgentDef<any>. The parameter is only used when reduce is set,
+  // which llm agents never use — cast is safe.
+  runtime.runFork(
+    supervise([suggesterAgent as unknown as AgentDef<any>]) as Effect.Effect<
+      void,
+      unknown,
+      EventStore | EventRegistry | AgentCursorStore
+    >,
+  )
+  console.log("[canvas] LLM suggester agent active")
+} else {
+  console.log(
+    "[canvas] LLM suggester: inactive (set ANTHROPIC_API_KEY to enable)",
+  )
+}
 
 Bun.serve({
   port: PORT,
