@@ -15,15 +15,31 @@ const model: LanguageModel = process.env.OPENROUTER_API_KEY
     )
   : anthropic("claude-sonnet-4-5")
 
-// Extract text from a tldraw shape. `geo`, `note`, and `text` shapes
-// all store their label in `props.text`; `richText` (TipTap JSON) is
-// more involved so we skip those for v1.
+// Extract visible text from a tldraw shape. tldraw v4 stores labels
+// for geo/note/text shapes in `props.richText` (TipTap JSON); older
+// versions used `props.text`. We support both.
+type RichTextNode = {
+  type?: string
+  text?: string
+  content?: ReadonlyArray<RichTextNode>
+}
+
+const walkRichText = (node: RichTextNode | undefined): string => {
+  if (!node) return ""
+  if (node.type === "text" && typeof node.text === "string") return node.text
+  if (Array.isArray(node.content))
+    return node.content.map(walkRichText).join("")
+  return ""
+}
+
 const extractText = (record: unknown): string | null => {
   const r = record as
-    | { type?: string; props?: { text?: string } }
+    | { props?: { text?: string; richText?: RichTextNode } }
     | undefined
-  const t = r?.props?.text
-  return typeof t === "string" && t.trim() ? t.trim() : null
+  const plain = r?.props?.text
+  if (typeof plain === "string" && plain.trim()) return plain.trim()
+  const rich = walkRichText(r?.props?.richText).trim()
+  return rich ? rich : null
 }
 
 export const suggesterAgent = defineLlmAgent({

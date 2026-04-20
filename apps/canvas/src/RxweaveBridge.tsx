@@ -22,28 +22,61 @@ import type { Editor, TLRecord } from "tldraw"
 
 export function RxweaveBridge({ editor }: { editor: Editor }) {
   useEffect(() => {
+    // Per-shape debounce for upserts so a typed label ("F", "Fe",
+    // "Fea", …) collapses into one "settled" event at the end of the
+    // typing burst. Without this the suggester agent fires once per
+    // keystroke — expensive and noisy. Deletes flush any pending
+    // upsert for the same id before posting the delete, so a
+    // "type-then-immediately-delete" sequence can't leak a stale
+    // upsert after the removal.
+    const DEBOUNCE_MS = 500
+    const pending = new Map<string, number>()
+
+    const scheduleUpsert = (id: string, event: { type: string; payload: unknown }) => {
+      const existing = pending.get(id)
+      if (existing !== undefined) clearTimeout(existing)
+      const timer = window.setTimeout(() => {
+        pending.delete(id)
+        void postEvent(event)
+      }, DEBOUNCE_MS)
+      pending.set(id, timer)
+    }
+
+    const flushForDelete = (id: string, event: { type: string; payload: unknown }) => {
+      const existing = pending.get(id)
+      if (existing !== undefined) clearTimeout(existing)
+      pending.delete(id)
+      void postEvent(event)
+    }
+
     const unlisten = editor.store.listen(
       (entry) => {
         const { added, updated, removed } = entry.changes
 
         for (const record of Object.values(added)) {
-          const ev = recordToEvent(record as TLRecord, "upserted")
-          if (ev) void postEvent(ev)
+          const r = record as TLRecord
+          const ev = recordToEvent(r, "upserted")
+          if (ev) scheduleUpsert(r.id, ev)
         }
         for (const [, to] of Object.values(updated) as Array<
           [TLRecord, TLRecord]
         >) {
           const ev = recordToEvent(to, "upserted")
-          if (ev) void postEvent(ev)
+          if (ev) scheduleUpsert(to.id, ev)
         }
         for (const record of Object.values(removed)) {
-          const ev = recordToEvent(record as TLRecord, "deleted")
-          if (ev) void postEvent(ev)
+          const r = record as TLRecord
+          const ev = recordToEvent(r, "deleted")
+          if (ev) flushForDelete(r.id, ev)
         }
       },
       { source: "user", scope: "document" },
     )
-    return unlisten
+    return () => {
+      for (const timer of pending.values()) clearTimeout(timer)
+      pending.clear()
+      unlisten()
+    }
   }, [editor])
 
   useEffect(() => {
