@@ -1,8 +1,8 @@
 # RxWeave CLI + Unified Stream Server — Design Spec
 
 **Date:** 2026-04-20
-**Status:** Brainstorming phase complete. Codex full-spec review incorporated (2026-04-20). Awaiting user review of revised spec, then writing-plans.
-**Authors:** Derek Wang + Claude (brainstorming session) with Codex (two independent reviews: CLI surface, then full-spec P0/P1/P2 pass)
+**Status:** Brainstorming phase complete. Two Codex review passes incorporated (2026-04-20). Awaiting final user review of revised spec, then writing-plans.
+**Authors:** Derek Wang + Claude (brainstorming session) with Codex (three independent reviews: CLI surface, then full-spec P0/P1/P2 pass, then second-pass verification)
 
 **Builds on:** `2026-04-18-rxweave-design.md` (v0.1 + v0.2 shipped), the `@rxweave/llm` + canvas demo work (v0.3.0 shipped 2026-04-20).
 
@@ -111,7 +111,8 @@ Changes:
 
 - **`server.ts`** — replaces the manual `Bun.serve` + `/api/events` + `/api/subscribe` block with a `startServer()` call from `@rxweave/server`. Same port (5301), but now the RPC protocol. Suggester agent wiring unchanged.
 - **`RxweaveBridge.tsx`** — `fetch POST` + `EventSource` are swapped for `@rxweave/store-cloud` configured with `url: "http://localhost:5301"`. The bridge's tldraw↔rxweave glue (`store.listen({source:"user"})` → `append`; SSE → `mergeRemoteChanges`) stays identical because `@rxweave/store-cloud` exposes the same `EventStore` service tag as the server side uses.
-- **`@rxweave/store-cloud` API change (prerequisite):** the current API requires `token: () => string` — mandatory bearer header on every request. For local-embedded mode (browser + server same origin, no tenant), there's no token to supply. Change the API to `token?: () => string | undefined` so `Authorization` headers are only emitted when the provider returns a defined value. This is a minor breaking change for existing cloud consumers; they already pass tokens so it's source-compatible. Update needed before the canvas browser can use `store-cloud` against the unauthed local default.
+- **`@rxweave/store-cloud` API change (prerequisite):** the current API requires `token: () => string` — mandatory bearer header on every request. Change to `token?: () => string | undefined` so `Authorization` headers are only emitted when the provider returns a defined value. Minor breaking change for existing cloud consumers; source-compatible because they already pass tokens. Needed for the canvas browser to connect in either authed or unauthed mode without duplicate adapter code.
+- **Browser-token bootstrap:** the embedded server exposes `GET /rxweave/session-token` — a single unauthenticated endpoint that returns `{"token": "rxk_..."}` if auth is on, or `{"token": null}` if `--no-auth`. The browser fetches this on startup, stores it in-memory (not localStorage), and passes to `CloudStore.Live` as `token: () => sessionToken`. Rationale: keeps the token out of Vite's bundle / DOM / localStorage / cookies — it only exists in the JS heap of the live session. A malicious same-origin page can't grab it from storage; a malicious subprocess reading `.rxweave/serve.token` still needs to already have local FS access (same threat model as the token file itself). The endpoint's lack of auth is intentional and scoped: it returns the same token to anyone reaching the embedded server on loopback, which is exactly the trust boundary the token defends.
 - **Schemas, suggester agent, tldraw, React, Vite, dev workflow** — unchanged.
 
 Browser bundle grows by `@rxweave/store-cloud` + its transitive Effect-rpc deps (estimate ~80-150 KB gzipped). Acceptable for the demo; to be measured against a budget (see §11).
@@ -194,7 +195,7 @@ For token: `RXWEAVE_TOKEN` env → config → auto-read from `.rxweave/serve.tok
 
 ### 5.4 Auth (revised per Codex P1)
 
-- **Default: on, with auto-generated ephemeral token.** `rxweave serve` generates a random 256-bit token at startup, writes it to `.rxweave/serve.token` (mode `0600`, added to `.gitignore` template by `rxweave init`), and prints the export line:
+- **Default: on, with auto-generated ephemeral token.** `rxweave serve` generates a random 256-bit token at startup, writes it to `.rxweave/serve.token` with restrictive permissions (POSIX mode `0600`; on Windows, an ACL granting read/write only to the current user). If neither permission model can be applied, `rxweave serve` logs a warning and continues — best-effort file protection, not a hard gate. File added to `.gitignore` template by `rxweave init`. Server prints on startup:
   ```
   [rxweave] stream on http://localhost:5300
   [rxweave] export RXWEAVE_TOKEN=rxk_<hex>
@@ -275,11 +276,11 @@ Multi-agent is the same pattern with different `RXWEAVE_ACTOR` per session. Mult
 
 ### 9.1 Obligation created by parking `replay`
 
-Since `replay` is deferred, the cursor-recovery workflow must be first-class documentation and have coverage:
+Since `replay` is deferred, the cursor-recovery workflow must be first-class documentation with coverage:
 
-- Cookbook entry: "resume an agent after crash" — shows `rxweave cursor` saved at checkpoint → restart → `rxweave stream --since <saved-cursor> --follow` to resume.
-- Cookbook entry: "restore state from a snapshot" — shows `rxweave stream --fold canvas > snapshot.json` + a recipe to re-emit events for seeding from snapshot via `rxweave import`.
-- Integration test in CLI smoke covering checkpoint → restart → resume without duplicate or skipped events.
+- **Cookbook: "resume an agent after crash"** — agent saves `rxweave cursor` output at checkpoints; on restart runs `rxweave stream --since <saved-cursor> --follow` to resume without gaps or duplicates.
+- **Cookbook: "back up and restore a local stream"** — copy `./.rxweave/stream.jsonl` to a backup path while the server is stopped; on restore, copy it back. The JSONL file is the canonical state; no snapshot-to-events transform is needed or supplied by v1. (The fold → import round-trip the earlier draft suggested is rejected here: `stream --fold canvas` outputs a projected state object, but `import` consumes events, so the round-trip is undefined without a projector-inverse transform. Punt that to a later spec if the use case surfaces.)
+- **Integration test** covering the cursor-checkpoint recovery flow: emit N events → save cursor → emit M more → client restarts with saved cursor → receives exactly M events, no gaps, no dupes.
 
 ---
 
@@ -304,7 +305,7 @@ Since `replay` is deferred, the cursor-recovery workflow must be first-class doc
 - Bundle-budget gate (§11) because adding `store-cloud` to the browser.
 - Duplicate-schema observability test (§11) per Codex P2.
 
-Roughly 1.5x the total surface area of v0.2.0 (cloud adapter) — larger than initially estimated due to shared handler extraction and cursor-recovery docs. Still one plan's worth of work, but implementers should expect ~2 weeks rather than 1.
+Roughly 1.5x the total surface area of v0.2.0 (cloud adapter) — larger than initially estimated due to shared handler extraction, browser-token bootstrap, cross-platform secret-file handling, and cursor-recovery docs. **Realistic estimate: 2.5-3 weeks** (Codex's second pass flagged the original 2-week estimate as optimistic given Convex-adapter ambiguity and the auth/bootstrap/test rewrites). One plan's worth of work, but scope implementers accordingly.
 
 ---
 
@@ -317,10 +318,13 @@ Roughly 1.5x the total surface area of v0.2.0 (cloud adapter) — larger than in
 - `rxweave cursor` returns a non-empty `EventId`-formatted string on a non-empty stream.
 - Claude Code can complete the §7 workflow end-to-end against a freshly-started `apps/web` instance without touching anything except its own shell.
 
-**Reliability (added per Codex P2 #8):**
-- **Reconnect/resume correctness:** a long-lived `rxweave stream --follow` surviving a server restart loses no events and emits no duplicates. Test: kill `rxweave serve`, emit N events while down, restart, verify client receives the N events (via cursor checkpoint on the client side).
-- **Server restart recovery:** `rxweave serve` + `FileStore` path resume cleanly from the on-disk `.rxweave/stream.jsonl` after a `SIGKILL` (covered by existing `@rxweave/store-file` cold-start recovery tests; add a test at the server layer).
-- **Cursor-recovery cookbook:** the two recipes in §9.1 each have an executable integration test.
+**Reliability (added per Codex P2 #8, refined per second-pass P1):**
+
+Split into two independent tests because "kill server and emit while down" is inherently self-contradictory (emits require the server).
+
+- **Client-crash recovery:** with a running `rxweave serve`, emit N events → save the client's cursor position → emit M more events → restart the `stream --follow` client with `--since <saved-cursor>` → verify the client receives exactly M events, in order, no duplicates, no gaps.
+- **Server-restart recovery:** `rxweave serve` with `FileStore` persists through a `SIGKILL` → restart from the same `.rxweave/stream.jsonl` → a `stream` call returns the exact event set that was there before the kill. (Leverages existing `@rxweave/store-file` cold-start-recovery coverage; add one server-layer test that exercises it end-to-end through the RPC transport.)
+- **Cursor-recovery cookbooks:** both recipes in §9.1 have an executable integration test. The backup-and-restore recipe runs with the server stopped (copy + restart).
 
 **Observability (added per Codex P2 #6):**
 - When `DuplicateEventType` is rejected, the server log line includes `type`, local digest, remote digest, and caller identity (actor or source IP). Asserted in a server-level test.
