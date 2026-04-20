@@ -29,11 +29,16 @@ jobs:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
 
-      # Trusted Publishing requires npm >= 11.5.1. Node 22's bundled
-      # npm is 10.9.2 — upgrade. `--force` avoids the self-replace
-      # `promise-retry` MODULE_NOT_FOUND bug when npm updates itself.
-      - name: Upgrade npm
-        run: npm install -g npm@latest --force
+      # Trusted Publishing requires npm >= 11.5.1. Node 22 bundles
+      # 10.9.2. `npm install -g npm@latest` breaks mid-self-replace
+      # (`promise-retry` MODULE_NOT_FOUND) even with --force; corepack
+      # sidesteps this by managing the shim separately from the
+      # running npm.
+      - name: Activate npm >= 11.5.1 via corepack
+        run: |
+          corepack enable
+          corepack prepare npm@11.5.1 --activate
+          npm --version
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
