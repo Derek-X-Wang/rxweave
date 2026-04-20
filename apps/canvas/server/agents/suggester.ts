@@ -3,6 +3,11 @@ import type { LanguageModel } from "ai"
 import { anthropic } from "@ai-sdk/anthropic"
 import { createOpenRouter } from "@openrouter/ai-sdk-provider"
 import { defineLlmAgent, tool } from "@rxweave/llm"
+import type { AgentDef } from "@rxweave/runtime"
+import type { EventEnvelope } from "@rxweave/schema"
+
+const log = (msg: string, ...args: unknown[]) =>
+  console.log(`[suggester] ${msg}`, ...args)
 
 // Prefer OpenRouter (one key, many providers, usage caps) when
 // OPENROUTER_API_KEY is set; fall back to a direct Anthropic key.
@@ -42,7 +47,7 @@ const extractText = (record: unknown): string | null => {
   return rich ? rich : null
 }
 
-export const suggesterAgent = defineLlmAgent({
+const baseAgent = defineLlmAgent({
   id: "canvas-suggester",
   on: { types: ["canvas.shape.upserted"] },
   model,
@@ -57,11 +62,18 @@ export const suggesterAgent = defineLlmAgent({
     // Runtime stamps `actor = agent.id` on emits, so the suggester's
     // own notes round-trip through its `on` filter. Guard here before
     // we spend an LLM call.
-    if (event.actor !== "human") return "Agent-authored shape, skip."
+    if (event.actor !== "human") {
+      log(`event ${event.id.slice(0, 12)} skip: agent-authored`)
+      return "Agent-authored shape, skip."
+    }
     const record = (event.payload as { record?: unknown }).record
     const text = extractText(record)
-    if (!text) return "Shape has no text, skip."
+    if (!text) {
+      log(`event ${event.id.slice(0, 12)} skip: no text`)
+      return "Shape has no text, skip."
+    }
     const pos = record as { x?: number; y?: number }
+    log(`event ${event.id.slice(0, 12)} prompt: "${text}"`)
     return `User labelled a shape with: "${text}" at (${pos.x ?? 0}, ${pos.y ?? 0}).`
   },
   tools: {
@@ -89,6 +101,7 @@ export const suggesterAgent = defineLlmAgent({
           y: triggering.y + args.offsetY,
           props: { text: args.text, color: "violet", size: "m" },
         }
+        log(`tool suggestNote → "${args.text}" @ (${note.x}, ${note.y})`)
         return Effect.succeed([
           { type: "canvas.shape.upserted", payload: { record: note } },
         ])
@@ -96,3 +109,31 @@ export const suggesterAgent = defineLlmAgent({
     }),
   },
 })
+
+// Wrap the agent's handle with tap/tapError so silent retries become
+// visible. The base handle swallows LLM errors under the retry
+// schedule; without this we'd have no feedback when the provider is
+// rate-limiting or the model id is wrong.
+export const suggesterAgent: AgentDef = {
+  ...baseAgent,
+  handle: (event: EventEnvelope) =>
+    baseAgent.handle!(event).pipe(
+      Effect.tap((result) =>
+        Effect.sync(() => {
+          const count = Array.isArray(result) ? result.length : 0
+          if (count > 0)
+            log(
+              `event ${event.id.slice(0, 12)} emitted ${count} note(s)`,
+            )
+        }),
+      ),
+      Effect.tapError((err) =>
+        Effect.sync(() => {
+          console.error(
+            `[suggester] event ${event.id.slice(0, 12)} errored:`,
+            err,
+          )
+        }),
+      ),
+    ),
+}
