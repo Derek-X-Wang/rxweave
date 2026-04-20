@@ -125,10 +125,13 @@
       "version": "0.3.0",
       "dependencies": {
         "@effect/rpc": "^0.75.0",
-        "@rxweave/schema": "workspace:*",
+        "@rxweave/schema": "workspace:^",
         "effect": "^3.21.0",
       },
       "devDependencies": {
+        "@effect/vitest": "^0.17.0",
+        "@rxweave/core": "workspace:^",
+        "@rxweave/store-memory": "workspace:^",
         "@types/node": "^22.10.0",
         "typescript": "^5.5.4",
         "vitest": "^2.1.0",
