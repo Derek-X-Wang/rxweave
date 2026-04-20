@@ -42,7 +42,19 @@ await runtime.runPromise(registerSchemas)
 // Opt-in LLM suggester agent. Gated on ANTHROPIC_API_KEY so the canvas
 // works standalone. Dynamic import keeps @ai-sdk/anthropic out of the
 // startup path when the key is missing.
-if (process.env.OPENROUTER_API_KEY || process.env.ANTHROPIC_API_KEY) {
+// SUGGESTER_DISABLED=1 forces the agent off even when an API key is
+// present — useful when a dev has OPENROUTER_API_KEY in .env for
+// other tools but doesn't want to burn tokens on every shape edit
+// during UI development.
+const suggesterDisabled =
+  process.env.SUGGESTER_DISABLED === "1" ||
+  process.env.SUGGESTER_DISABLED === "true"
+const hasKey =
+  !!process.env.OPENROUTER_API_KEY || !!process.env.ANTHROPIC_API_KEY
+
+if (suggesterDisabled) {
+  console.log("[canvas] LLM suggester: disabled via SUGGESTER_DISABLED")
+} else if (hasKey) {
   const { suggesterAgent } = await import("./agents/suggester.js")
   // `supervise` forks the heartbeat emitter via Effect.forkScoped and
   // so requires a Scope in its requirement set. ManagedRuntime only
@@ -68,6 +80,7 @@ if (process.env.OPENROUTER_API_KEY || process.env.ANTHROPIC_API_KEY) {
     "[canvas] LLM suggester: inactive (set OPENROUTER_API_KEY or ANTHROPIC_API_KEY to enable)",
   )
 }
+
 
 Bun.serve({
   port: PORT,

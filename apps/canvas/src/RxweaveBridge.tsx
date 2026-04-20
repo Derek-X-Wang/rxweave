@@ -29,7 +29,7 @@ export function RxweaveBridge({ editor }: { editor: Editor }) {
     // upsert for the same id before posting the delete, so a
     // "type-then-immediately-delete" sequence can't leak a stale
     // upsert after the removal.
-    const DEBOUNCE_MS = 500
+    const DEBOUNCE_MS = 2000
     const pending = new Map<string, number>()
 
     const scheduleUpsert = (id: string, event: { type: string; payload: unknown }) => {

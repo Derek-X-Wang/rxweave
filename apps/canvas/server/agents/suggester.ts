@@ -167,6 +167,19 @@ const baseAgent = defineLlmAgent({
 // visible. The base handle swallows LLM errors under the retry
 // schedule; without this we'd have no feedback when the provider is
 // rate-limiting or the model id is wrong.
+// Module-level map: triggering-shape-id → agent-authored note-ids
+// emitted for that shape. When the same shape re-fires (user edits
+// the label, debounce catches a new settled state), we emit delete
+// events for the prior notes before letting the LLM propose new
+// ones — the canvas always shows the latest set of suggestions,
+// never a pile of stale ones overlapping at the same coordinates.
+//
+// Ephemeral: lost on server restart. The prior notes stay in the
+// event log and still render; we just lose the ability to clean
+// them up. Good enough for a demo; a durable version would live
+// in a `agent.state.<id>` sub-log or a Ref in a persisted store.
+const priorNotesByShape = new Map<string, ReadonlyArray<string>>()
+
 export const suggesterAgent: AgentDef = {
   ...baseAgent,
   handle: (event: EventEnvelope) =>
@@ -183,7 +196,33 @@ export const suggesterAgent: AgentDef = {
       log(
         `handle entered for event ${event.id.slice(0, 12)} (type=${event.type}, actor=${event.actor})`,
       )
+      const triggerShapeId = (
+        event.payload as { record?: { id?: string } }
+      ).record?.id
+      const priorIds = triggerShapeId
+        ? (priorNotesByShape.get(triggerShapeId) ?? [])
+        : []
       return yield* baseAgent.handle!(event).pipe(
+        Effect.map((result) => {
+          const newNotes = Array.isArray(result) ? result : []
+          const newIds = newNotes
+            .map(
+              (n) =>
+                (n.payload as { record?: { id?: string } }).record?.id,
+            )
+            .filter((id): id is string => !!id)
+          if (triggerShapeId && newIds.length > 0) {
+            priorNotesByShape.set(triggerShapeId, newIds)
+          }
+          if (priorIds.length === 0) return newNotes
+          log(`deleting ${priorIds.length} stale note(s) for ${triggerShapeId?.slice(0, 20)}`)
+          const deletes = priorIds.map((id) => ({
+            type: "canvas.shape.deleted",
+            payload: { id },
+          }))
+          return [...deletes, ...newNotes]
+        }),
+      ).pipe(
         Effect.tap((result) =>
           Effect.sync(() => {
             const count = Array.isArray(result) ? result.length : 0
