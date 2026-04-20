@@ -1,0 +1,36 @@
+{
+  "name": "@rxweave/canvas",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -n server,web -c cyan,magenta \"bun run dev:server\" \"bun run dev:web\"",
+    "dev:server": "bun --watch server/server.ts",
+    "dev:web": "vite",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "effect": "^3.21.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "tldraw": "^4.5.0",
+    "@rxweave/schema": "workspace:^",
+    "@rxweave/core": "workspace:^",
+    "@rxweave/runtime": "workspace:^",
+    "@rxweave/store-file": "workspace:^",
+    "@rxweave/llm": "workspace:^",
+    "@ai-sdk/anthropic": "^2.0.0",
+    "ai": "^5.0.0"
+  },
+  "devDependencies": {
+    "@types/bun": "1.3.12",
+    "@types/node": "^22.10.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "concurrently": "^9.0.0",
+    "typescript": "^5.5.4",
+    "vite": "^7.0.0"
+  }
+}
