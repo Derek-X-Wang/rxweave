@@ -88,20 +88,49 @@ const baseAgent = defineLlmAgent({
         const triggering = (event.payload as {
           record: { x: number; y: number }
         }).record
-        // Minimal tldraw note record. The store fills defaults for
-        // unspecified optional fields; we only set what's meaningful
-        // (position + props that differ from defaults). Violet colour
-        // makes agent-authored notes visually distinct without any
-        // bridge-side conditional.
+        // tldraw v4 store.put validates records against its schema and
+        // silently drops shapes missing required fields. A "note" shape
+        // needs: parentId, index, rotation, isLocked, opacity, meta at
+        // the record level, and a full set of note-specific props
+        // (including richText in TipTap JSON form). Minimal records
+        // look accepted (no error on put) but nothing renders.
+        const x = triggering.x + args.offsetX
+        const y = triggering.y + args.offsetY
         const note = {
           typeName: "shape" as const,
           id: `shape:sugg-${crypto.randomUUID()}`,
           type: "note" as const,
-          x: triggering.x + args.offsetX,
-          y: triggering.y + args.offsetY,
-          props: { text: args.text, color: "violet", size: "m" },
+          x,
+          y,
+          rotation: 0,
+          isLocked: false,
+          opacity: 1,
+          meta: {},
+          parentId: "page:page",
+          index: `a${Date.now().toString(36)}`,
+          props: {
+            color: "violet",
+            labelColor: "black",
+            size: "m",
+            font: "draw",
+            align: "middle",
+            verticalAlign: "middle",
+            growY: 0,
+            url: "",
+            fontSizeAdjustment: 0,
+            scale: 1,
+            richText: {
+              type: "doc",
+              content: [
+                {
+                  type: "paragraph",
+                  content: [{ type: "text", text: args.text }],
+                },
+              ],
+            },
+          },
         }
-        log(`tool suggestNote → "${args.text}" @ (${note.x}, ${note.y})`)
+        log(`tool suggestNote → "${args.text}" @ (${x}, ${y})`)
         return Effect.succeed([
           { type: "canvas.shape.upserted", payload: { record: note } },
         ])
