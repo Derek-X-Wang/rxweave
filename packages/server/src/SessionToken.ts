@@ -45,8 +45,6 @@ export const sessionTokenRouteLayer = (
   HttpRouter.Default.use((router) =>
     router.get(
       SESSION_TOKEN_PATH,
-      Effect.succeed(
-        HttpServerResponse.unsafeJson({ token: tokens[0] ?? null }),
-      ),
+      HttpServerResponse.json({ token: tokens[0] ?? null }),
     ),
   )

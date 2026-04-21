@@ -21,7 +21,6 @@ import {
   registrySyncDiffHandler,
   registryPushHandler,
 } from "@rxweave/protocol"
-import type { EventId } from "@rxweave/schema"
 import { verifyToken } from "./Auth.js"
 import { SESSION_TOKEN_PATH, sessionTokenRouteLayer } from "./SessionToken.js"
 import { Tenant } from "./Tenant.js"
@@ -102,29 +101,12 @@ export interface ServerHandle {
  * closes over an explicit `tenantId` closure arg; the pattern is
  * equivalent, just wired through the Tenant tag for parity.
  */
-// Adapter shims resolve two narrow type-signature mismatches between
-// the shared handlers and the wire contracts. These are NOT behavioral
-// changes — they're compile-time only:
-//
-//   - Subscribe: the wire payload makes `filter` optional via
-//     `Schema.optional(Filter)` which surfaces as `filter?: Filter` in
-//     the ToHandlerFn signature. The handler's own signature uses the
-//     same optional shape but under `exactOptionalPropertyTypes` the
-//     two aren't directly assignable (the handler treats
-//     `filter === undefined` identically to `filter` absent, but TS
-//     demands the presence bit align). We forward the payload as-is.
-//
-//   - QueryAfter: the handler's `cursor` is typed as `EventId`, but
-//     the wire allows `Cursor = EventId | "earliest" | "latest"`. The
-//     underlying `EventStore.queryAfter` accepts `Cursor` (both stores
-//     do), so this is a narrower-than-needed annotation on the shared
-//     handler. We cast through `EventId` — runtime-safe because the
-//     store doesn't distinguish.
-//
-// Task 11's conformance harness can tighten these if the shared
-// handlers' signatures shift.
 const rpcImpl = RxWeaveRpc.toLayer({
   Append: appendHandler,
+  // Subscribe adapter: the wire's `filter?: Filter | undefined` (from
+  // `Schema.optional(Filter)`) isn't directly assignable to the
+  // handler's `filter?: Filter` under exactOptionalPropertyTypes.
+  // Forward conditionally — same runtime behaviour, one TS-only hop.
   Subscribe: (payload) =>
     subscribeHandler(
       payload.filter === undefined
@@ -133,13 +115,13 @@ const rpcImpl = RxWeaveRpc.toLayer({
     ),
   GetById: getByIdHandler,
   Query: queryHandler,
-  QueryAfter: (payload) =>
-    queryAfterHandler({
-      cursor: payload.cursor as EventId,
-      filter: payload.filter,
-      limit: payload.limit,
-    }),
+  QueryAfter: queryAfterHandler,
   RegistrySyncDiff: registrySyncDiffHandler,
+  // RegistryPush adapter: the wire payload is just { defs }; we enrich
+  // it with `callerActor` from the Tenant context so the observability
+  // warn-log in registryPushHandler can attribute duplicate-schema
+  // conflicts to a specific caller. Cloud's rxweaveRpc.ts does the
+  // equivalent via closure over an explicit tenantId arg.
   RegistryPush: (payload) =>
     Effect.gen(function* () {
       const tenant = yield* Tenant
@@ -236,9 +218,14 @@ export const startServer = (
     // precisely to hand out the token to clients that don't have it.
     const sessionTokenLive = sessionTokenRouteLayer(opts.auth?.bearer ?? [])
 
+    // Install middleware only when there's at least one expected
+    // token. `auth: { bearer: [] }` is the same as omitting `auth`
+    // entirely — fall through to the no-auth path rather than
+    // installing a middleware that always passes (per-request
+    // allocation for a no-op is wasted work).
     const expectedTokens = opts.auth?.bearer
     const ServerLive =
-      expectedTokens !== undefined
+      expectedTokens !== undefined && expectedTokens.length > 0
         ? HttpRouter.Default.serve(
             HttpMiddleware.make((app) =>
               Effect.gen(function* () {

@@ -1,16 +1,17 @@
 import { Effect } from "effect"
 import { EventStore } from "@rxweave/core"
-import type { EventEnvelope, EventId, Filter } from "@rxweave/schema"
+import type { Cursor, EventEnvelope, Filter } from "@rxweave/schema"
 import { QueryWireError } from "../Errors.js"
 
 /**
  * Pure-Effect `QueryAfter` handler — matches the `RxWeaveRpc.QueryAfter`
- * wire contract (`filter` is required). Delegates to
- * `EventStore.queryAfter` (the exclusive-cursor pagination primitive),
- * mapping `QueryError` to `QueryWireError`.
+ * wire contract. Delegates to `EventStore.queryAfter` (the
+ * exclusive-cursor pagination primitive, which accepts the full
+ * `Cursor = EventId | "earliest" | "latest"` range), mapping
+ * `QueryError` to `QueryWireError`.
  */
 export const queryAfterHandler = (args: {
-  readonly cursor: EventId
+  readonly cursor: Cursor
   readonly filter: Filter
   readonly limit: number
 }): Effect.Effect<ReadonlyArray<EventEnvelope>, QueryWireError, EventStore> =>
