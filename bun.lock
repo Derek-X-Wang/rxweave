@@ -199,6 +199,7 @@
       },
       "devDependencies": {
         "@effect/vitest": "^0.17.0",
+        "@rxweave/store-cloud": "workspace:^",
         "@rxweave/store-file": "workspace:^",
         "@rxweave/store-memory": "workspace:^",
         "@types/node": "^22.10.0",
@@ -212,9 +213,9 @@
       "dependencies": {
         "@effect/platform": "^0.96.0",
         "@effect/rpc": "^0.75.0",
-        "@rxweave/core": "workspace:*",
-        "@rxweave/protocol": "workspace:*",
-        "@rxweave/schema": "workspace:*",
+        "@rxweave/core": "workspace:^",
+        "@rxweave/protocol": "workspace:^",
+        "@rxweave/schema": "workspace:^",
         "effect": "^3.21.0",
       },
       "devDependencies": {

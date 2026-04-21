@@ -22,7 +22,8 @@
   "scripts": {
     "build": "bun build ./src/index.ts --target=node --format=esm --outdir=dist --splitting --packages=external && tsc --emitDeclarationOnly --outDir dist",
     "typecheck": "tsc --noEmit",
-    "test": "bun test",
+    "test": "bun test && bun run test:conformance",
+    "test:conformance": "bun --bun ./node_modules/vitest/vitest.mjs run",
     "lint": "oxlint src"
   },
   "dependencies": {
@@ -40,6 +41,7 @@
     "vitest": "^2.1.0",
     "@effect/vitest": "^0.17.0",
     "@rxweave/store-memory": "workspace:^",
-    "@rxweave/store-file": "workspace:^"
+    "@rxweave/store-file": "workspace:^",
+    "@rxweave/store-cloud": "workspace:^"
   }
 }
