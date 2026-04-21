@@ -23,6 +23,7 @@ import {
 } from "@rxweave/protocol"
 import type { EventId } from "@rxweave/schema"
 import { verifyToken } from "./Auth.js"
+import { SESSION_TOKEN_PATH, sessionTokenRouteLayer } from "./SessionToken.js"
 import { Tenant } from "./Tenant.js"
 
 /**
@@ -227,6 +228,14 @@ export const startServer = (
     // `Middleware.HttpMiddleware.Applied<App.Default, E, R>`. Inlining
     // the lambda inside `HttpMiddleware.make(...)` is what makes the
     // generic inference land without an explicit cast.
+    //
+    // Session-token bootstrap route (spec §3.3). Registered on the
+    // same `HttpRouter.Default` as the RPC so both share one Bun
+    // listener. The auth middleware below exact-match-bypasses this
+    // path — see the `req.url` check — because the endpoint exists
+    // precisely to hand out the token to clients that don't have it.
+    const sessionTokenLive = sessionTokenRouteLayer(opts.auth?.bearer ?? [])
+
     const expectedTokens = opts.auth?.bearer
     const ServerLive =
       expectedTokens !== undefined
@@ -234,6 +243,18 @@ export const startServer = (
             HttpMiddleware.make((app) =>
               Effect.gen(function* () {
                 const req = yield* HttpServerRequest.HttpServerRequest
+                // Exact-match bypass for the session-token bootstrap.
+                // Strip any query string so `/rxweave/session-token?x=y`
+                // still matches; deliberately no prefix/wildcard so an
+                // attacker can't craft `/rxweave/session-token/../rpc`
+                // to slip past auth (the router would 404 such a path
+                // anyway, but we want the bypass itself tight). No other
+                // endpoint is relaxed — every other request must still
+                // present a valid Bearer token.
+                const pathname = req.url.split("?", 1)[0] ?? req.url
+                if (pathname === SESSION_TOKEN_PATH) {
+                  return yield* app
+                }
                 const header = req.headers["authorization"] ?? ""
                 const provided = header.startsWith("Bearer ")
                   ? header.slice("Bearer ".length)
@@ -246,11 +267,13 @@ export const startServer = (
             ),
           ).pipe(
             Layer.provide(rpcServerLive),
+            Layer.provide(sessionTokenLive),
             Layer.provide(rpcProtocolLive),
             Layer.provide(Layer.succeedContext(bunCtx)),
           )
         : HttpRouter.Default.serve().pipe(
             Layer.provide(rpcServerLive),
+            Layer.provide(sessionTokenLive),
             Layer.provide(rpcProtocolLive),
             Layer.provide(Layer.succeedContext(bunCtx)),
           )
