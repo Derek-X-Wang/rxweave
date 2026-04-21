@@ -25,6 +25,7 @@ import { inspectCommand } from "../src/commands/inspect.js"
 import { countCommand } from "../src/commands/count.js"
 import { lastCommand } from "../src/commands/last.js"
 import { headCommand } from "../src/commands/head.js"
+import { cursorCommand } from "../src/commands/cursor.js"
 import { schemaCommand } from "../src/commands/schema.js"
 import { agentCommand } from "../src/commands/agent.js"
 import { storeCommand } from "../src/commands/store.js"
@@ -42,6 +43,7 @@ const root = rootCommand.pipe(
     countCommand,
     lastCommand,
     headCommand,
+    cursorCommand,
     schemaCommand,
     agentCommand,
     storeCommand,
