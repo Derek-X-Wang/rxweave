@@ -17,6 +17,7 @@ import {
 import { initCommand } from "../src/commands/init.js"
 import { devCommand } from "../src/commands/dev.js"
 import { emitCommand } from "../src/commands/emit.js"
+import { serveCommand } from "../src/commands/serve.js"
 import { streamCommand } from "../src/commands/stream.js"
 import { getCommand } from "../src/commands/get.js"
 import { inspectCommand } from "../src/commands/inspect.js"
@@ -32,6 +33,7 @@ const root = rootCommand.pipe(
     initCommand,
     devCommand,
     emitCommand,
+    serveCommand,
     streamCommand,
     getCommand,
     inspectCommand,
