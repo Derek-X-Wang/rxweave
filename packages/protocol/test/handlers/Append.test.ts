@@ -17,6 +17,8 @@ describe("appendHandler", () => {
         registryDigest: yield* reg.digest,
       })
       expect(envelopes.length).toBe(1)
+      expect(envelopes[0]!.id).toBeDefined()
+      expect(typeof envelopes[0]!.id).toBe("string")
       expect(envelopes[0]!.type).toBe("demo.ping")
     }).pipe(
       Effect.provide(MemoryStore.Live),

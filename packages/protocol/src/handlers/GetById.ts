@@ -18,7 +18,11 @@ export const getByIdHandler = (args: {
   EventStore.pipe(
     Effect.flatMap((store) =>
       store.getById(args.id).pipe(
-        Effect.mapError(() => new NotFoundWireError({ id: args.id })),
+        // Map using the typed `NotFound.id` from the source error — any
+        // future non-NotFound error variant on `EventStore.getById` will
+        // surface as a TS mismatch rather than being coerced to
+        // NotFoundWireError. Matches cloud's handler in rxweaveRpc.ts.
+        Effect.mapError((e) => new NotFoundWireError({ id: e.id })),
       ),
     ),
   )
