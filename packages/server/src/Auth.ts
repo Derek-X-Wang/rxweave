@@ -37,7 +37,12 @@ export const generateAndPersistToken = (opts: {
 }): Effect.Effect<string> =>
   Effect.sync(() => {
     const token = generateToken()
-    writeFileSync(opts.tokenFile, token + "\n", "utf8")
+    // Pass `mode: 0o600` to writeFileSync so the file is created with
+    // tight perms atomically — no TOCTOU window between create (at
+    // umask-default 0644) and the chmod tightening below. The explicit
+    // chmodSync stays as a fallback for pre-existing files whose perms
+    // would otherwise be preserved by the write.
+    writeFileSync(opts.tokenFile, token + "\n", { encoding: "utf8", mode: 0o600 })
     try {
       chmodSync(opts.tokenFile, 0o600)
     } catch {

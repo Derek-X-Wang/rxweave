@@ -24,8 +24,9 @@ import { defineConfig } from "vitest/config"
  *   - `bun test` matches `*{.test,.spec}.{ts,tsx,…}` — the
  *     `.vitest.ts` suffix is deliberately outside that glob, so
  *     conformance files stay invisible to `bun test`.
- *   - vitest's default include is `**\/*.{test,spec}.*` so we
- *     override `include` here to pick up `.vitest.ts` instead.
+ *   - vitest's default include is `**\/*.{test,spec}.*` (the escape
+ *     is load-bearing — `*\/` would close this block comment early)
+ *     so we override `include` here to pick up `.vitest.ts` instead.
  *
  * The conformance script still needs Bun as the *runtime* (so
  * `Bun.serve` exists inside vitest's test modules). See the
