@@ -1,4 +1,10 @@
-import { HttpRouter, HttpServer } from "@effect/platform"
+import {
+  HttpMiddleware,
+  HttpRouter,
+  HttpServer,
+  HttpServerRequest,
+  HttpServerResponse,
+} from "@effect/platform"
 import { BunHttpServer } from "@effect/platform-bun"
 import { RpcSerialization, RpcServer } from "@effect/rpc"
 import { Effect, Layer } from "effect"
@@ -16,6 +22,7 @@ import {
   registryPushHandler,
 } from "@rxweave/protocol"
 import type { EventId } from "@rxweave/schema"
+import { verifyToken } from "./Auth.js"
 import { Tenant } from "./Tenant.js"
 
 /**
@@ -29,8 +36,22 @@ import { Tenant } from "./Tenant.js"
  * `port: 0` is accepted and forwarded to Bun, which assigns an OS
  * ephemeral port — the resolved value comes back on `ServerHandle.port`.
  *
- * `auth` is reserved for Task 9 (bearer-token auth). It's in the shape
- * now so the public surface doesn't change between v0.3 and v0.4.
+ * `auth.bearer` holds the allow-list of valid bearer tokens. When
+ * `auth` is set every request must carry `Authorization: Bearer <tok>`
+ * where `<tok>` matches one of the expected values; otherwise the
+ * middleware short-circuits with a 401 and the RPC handler never runs.
+ * Omitting `auth` entirely is the no-auth / embedded path — no
+ * middleware is installed, so in-process callers never pay the cost.
+ * `auth: { bearer: [] }` is also accepted and behaves as no-auth
+ * (every token matches) but is considered a degenerate configuration;
+ * prefer omitting `auth` when you want no auth.
+ *
+ * NOTE: the `--host 0.0.0.0 --no-auth` hard-error interlock from spec
+ * §5.4 is enforced at the CLI layer (Task 12), not here. `startServer`
+ * is a library-level primitive — we can't assume the caller's UX flow
+ * or rule out legitimate no-auth listening on non-loopback interfaces
+ * (e.g. a reverse proxy that does its own auth). The hardening belongs
+ * to the entry point that advertises those flags.
  */
 export interface ServerOpts {
   readonly store: Layer.Layer<EventStore>
@@ -189,11 +210,50 @@ export const startServer = (
     const rpcServerLive = RpcServer.layer(RxWeaveRpc).pipe(
       Layer.provide(handlersLive),
     )
-    const ServerLive = HttpRouter.Default.serve().pipe(
-      Layer.provide(rpcServerLive),
-      Layer.provide(rpcProtocolLive),
-      Layer.provide(Layer.succeedContext(bunCtx)),
-    )
+
+    // Bearer-token auth. When `opts.auth` is set we wrap every
+    // request in a middleware that reads the `Authorization` header
+    // and consults `verifyToken`; a missing/invalid token returns 401
+    // and the inner RPC app never runs. When `opts.auth` is undefined
+    // we fall back to `Default.serve()` with no middleware so the
+    // no-auth path is a true passthrough — zero overhead, easier to
+    // reason about in the embedded case where in-process callers
+    // don't need a token at all.
+    //
+    // `HttpMiddleware.make` is a type-preserving identity: at runtime
+    // it returns its argument unchanged; at the type level it brands
+    // the function with the `HttpMiddleware` interface so
+    // `HttpRouter.Default.serve(middleware)` accepts it as a
+    // `Middleware.HttpMiddleware.Applied<App.Default, E, R>`. Inlining
+    // the lambda inside `HttpMiddleware.make(...)` is what makes the
+    // generic inference land without an explicit cast.
+    const expectedTokens = opts.auth?.bearer
+    const ServerLive =
+      expectedTokens !== undefined
+        ? HttpRouter.Default.serve(
+            HttpMiddleware.make((app) =>
+              Effect.gen(function* () {
+                const req = yield* HttpServerRequest.HttpServerRequest
+                const header = req.headers["authorization"] ?? ""
+                const provided = header.startsWith("Bearer ")
+                  ? header.slice("Bearer ".length)
+                  : ""
+                if (!verifyToken({ expected: expectedTokens, provided })) {
+                  return HttpServerResponse.empty({ status: 401 })
+                }
+                return yield* app
+              }),
+            ),
+          ).pipe(
+            Layer.provide(rpcServerLive),
+            Layer.provide(rpcProtocolLive),
+            Layer.provide(Layer.succeedContext(bunCtx)),
+          )
+        : HttpRouter.Default.serve().pipe(
+            Layer.provide(rpcServerLive),
+            Layer.provide(rpcProtocolLive),
+            Layer.provide(Layer.succeedContext(bunCtx)),
+          )
 
     // Build the rest of the stack. Scope-bound resources release on
     // scope close — that's the "close the Scope -> shut the server
