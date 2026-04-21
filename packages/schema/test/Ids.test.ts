@@ -22,3 +22,30 @@ describe("Ids", () => {
     expect(typeof branded).toBe("string")
   })
 })
+
+describe("ActorId regex validation", () => {
+  it.each([
+    "human",
+    "claude-code",
+    "canvas-suggester",
+    "derek:claude-code",
+    "v2.build",
+    "with_underscore",
+    "a", // min length 1
+  ])("accepts %s", (value) => {
+    expect(() => Schema.decodeUnknownSync(ActorId)(value)).not.toThrow()
+  })
+
+  it.each([
+    "claude code", // whitespace
+    "user:agent:extra", // two colons
+    "a/b", // slash
+    "actor@host", // at-sign
+    "", // empty
+    ":", // bare separator
+    "user:", // trailing separator
+    ":agent", // leading separator
+  ])("rejects %s", (value) => {
+    expect(() => Schema.decodeUnknownSync(ActorId)(value)).toThrow()
+  })
+})
