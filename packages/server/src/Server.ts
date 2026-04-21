@@ -5,22 +5,16 @@ import { Effect, Layer } from "effect"
 import type { Scope } from "effect"
 import type { EventStore } from "@rxweave/core"
 import { EventRegistry } from "@rxweave/schema"
-import { RxWeaveRpc } from "@rxweave/protocol"
-// IMPORT NOTE: the protocol package exposes its handlers only through
-// `src/handlers/` — there's no `./handlers` subpath in its `exports` map
-// today, and re-exporting from `@rxweave/protocol` itself would require
-// touching the protocol package (Task 8's guardrails forbid that). Relative
-// imports into a sibling workspace source tree are fine under TypeScript
-// `moduleResolution: bundler` + Bun's workspace symlinks. If a future task
-// adds `exports["./handlers"]`, these can be swapped for the public form
-// without behavioral change.
-import { appendHandler } from "../../protocol/src/handlers/Append.js"
-import { subscribeHandler } from "../../protocol/src/handlers/Subscribe.js"
-import { getByIdHandler } from "../../protocol/src/handlers/GetById.js"
-import { queryHandler } from "../../protocol/src/handlers/Query.js"
-import { queryAfterHandler } from "../../protocol/src/handlers/QueryAfter.js"
-import { registrySyncDiffHandler } from "../../protocol/src/handlers/RegistrySyncDiff.js"
-import { registryPushHandler } from "../../protocol/src/handlers/RegistryPush.js"
+import {
+  RxWeaveRpc,
+  appendHandler,
+  subscribeHandler,
+  getByIdHandler,
+  queryHandler,
+  queryAfterHandler,
+  registrySyncDiffHandler,
+  registryPushHandler,
+} from "@rxweave/protocol"
 import type { EventId } from "@rxweave/schema"
 import { Tenant } from "./Tenant.js"
 
