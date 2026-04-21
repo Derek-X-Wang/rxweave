@@ -25,7 +25,7 @@ export class EventDefWire extends Schema.Class<EventDefWire>("EventDefWire")({
   digest: Schema.String,
 }) {}
 
-const digestOne = (def: EventDef): string => {
+export const digestOne = (def: EventDef): string => {
   const ast = JSON.stringify((def.payload as unknown as { ast: unknown }).ast ?? null)
   return hex(`${def.type}|${def.version ?? 1}|${ast}`)
 }

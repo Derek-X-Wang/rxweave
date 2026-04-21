@@ -1,43 +1,39 @@
 import { Effect } from "effect"
 import { EventRegistry } from "@rxweave/schema"
+import type { EventDefWire } from "@rxweave/schema"
+import { RegistryWireError } from "../Errors.js"
 
 /**
  * Pure-Effect registry-diff handler shared by Cloud and `@rxweave/server`.
  *
- * Returns the server's digest + the symmetric difference between the
- * client's known types and the server's — the client uses
- * `missingOnServer` to decide what to `RegistryPush` next.
+ * Wire shape matches `RxWeaveRpc.RegistrySyncDiff` at
+ * `packages/protocol/src/RxWeaveRpc.ts`: payload is just the client's
+ * digest; success is `{ upToDate, missingOnClient: EventDefWire[],
+ * missingOnServer: string[] }`. `missingOnServer` stays empty here
+ * because the server can't know what types the client has without
+ * being told — the client inspects `missingOnClient` and pushes what
+ * it needs via `RegistryPush`.
  *
- * The Convex-backed handler in `cloud/packages/backend/convex/rxweaveRpc.ts`
- * returns a richer `{ upToDate, missingOnClient: ReadonlyArray<EventDefWire>,
- * missingOnServer }` wire shape because Convex doesn't see the client's
- * type list (only the digest). At the pure-effect layer we DO accept the
- * client's `clientTypes`, so we return the cheaper `ReadonlyArray<string>`
- * symmetric-diff — callers that need the wire shape can build it from
- * `registry.all + missingOnClient` themselves.
+ * Short-circuits on digest match — steady-state reconnects skip all
+ * allocation.
  */
 export const registrySyncDiffHandler = (args: {
   readonly clientDigest: string
-  readonly clientTypes: ReadonlyArray<string>
 }): Effect.Effect<
   {
-    readonly serverDigest: string
-    readonly missingOnClient: ReadonlyArray<string>
+    readonly upToDate: boolean
+    readonly missingOnClient: ReadonlyArray<EventDefWire>
     readonly missingOnServer: ReadonlyArray<string>
   },
-  never,
+  RegistryWireError,
   EventRegistry
 > =>
   Effect.gen(function* () {
     const registry = yield* EventRegistry
     const serverDigest = yield* registry.digest
-    const all = yield* registry.all
-    const serverTypes = all.map((d) => d.type)
-    const clientSet = new Set(args.clientTypes)
-    const serverSet = new Set(serverTypes)
-    return {
-      serverDigest,
-      missingOnClient: serverTypes.filter((t) => !clientSet.has(t)),
-      missingOnServer: args.clientTypes.filter((t) => !serverSet.has(t)),
+    if (serverDigest === args.clientDigest) {
+      return { upToDate: true, missingOnClient: [], missingOnServer: [] }
     }
+    const wire = yield* registry.wire
+    return { upToDate: false, missingOnClient: wire, missingOnServer: [] }
   })

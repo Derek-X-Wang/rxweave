@@ -1,10 +1,8 @@
 import { Effect, Schema } from "effect"
-import { EventRegistry, defineEvent } from "@rxweave/schema"
+import { EventRegistry, defineEvent, digestOne } from "@rxweave/schema"
 import type { EventDefWire } from "@rxweave/schema"
+import { RegistryWireError } from "../Errors.js"
 
-// `@types/node` isn't in this package's tsconfig `types: []`, so declare
-// the single `console` surface we actually use. Keeping it local avoids
-// pulling the whole DOM/Node lib just to emit a warn line.
 declare const console: { readonly warn: (...args: ReadonlyArray<unknown>) => void }
 
 /**
@@ -12,48 +10,42 @@ declare const console: { readonly warn: (...args: ReadonlyArray<unknown>) => voi
  *
  * Accepts wire event definitions from a client and registers unknown
  * types. Spec §6 + Codex P2 require loud observability on duplicates
- * whose schemas don't match — we log at `warn` with type, local digest,
- * remote digest, and caller identity (if provided). The server's RPC
- * plumbing passes `callerActor` so the log line can attribute the
- * conflict; unknown callers are logged as `"unknown"`.
+ * whose schemas don't match — we log at `warn` with type, the first 8
+ * chars of the canonical sha256 digest (via `digestOne`) for local
+ * and remote sides, and caller identity.
  *
- * We can't reconstruct the client's precise `Schema` at the pure-effect
- * layer (the wire carries an arbitrary AST), so unknown types are
- * registered with a permissive `Schema.Unknown`. The wire roundtrip
- * keeps the client's validation authoritative; the server's copy is
- * for the registry digest handshake, not payload validation.
+ * Unknown types register under `Schema.Unknown` since we can't
+ * reconstruct the client's precise Schema from the wire AST. The
+ * server copy exists for the digest handshake, not payload validation
+ * — the client's validation is authoritative.
+ *
+ * Uses `registry.lookup` per-def (Map-backed O(1)) rather than caching
+ * a snapshot of `registry.all`, so duplicate entries within the same
+ * `defs` array can't silently both land on the miss path.
  */
 export const registryPushHandler = (args: {
   readonly defs: ReadonlyArray<EventDefWire>
   readonly callerActor?: string
-}): Effect.Effect<{ readonly accepted: number }, never, EventRegistry> =>
+}): Effect.Effect<void, RegistryWireError, EventRegistry> =>
   Effect.gen(function* () {
     const registry = yield* EventRegistry
-    const existing = yield* registry.all
-    const existingByType = new Map(existing.map((d) => [d.type, d]))
-    let accepted = 0
 
     for (const def of args.defs) {
-      const already = existingByType.get(def.type)
+      const already = yield* registry.lookup(def.type).pipe(
+        Effect.map((d) => d as { readonly type: string; readonly version?: number; readonly payload: unknown } | null),
+        Effect.catchTag("UnknownEventType", () => Effect.succeed(null)),
+      )
       if (already) {
-        // Compute a deterministic local digest to compare against the
-        // client's `def.digest`. We use the server's stored payload AST
-        // serialization as the canonical fingerprint (matches how
-        // `Registry.digest` is computed in `@rxweave/schema`).
-        const localAst = JSON.stringify(
-          (already.payload as unknown as { ast: unknown }).ast ?? null,
-        )
-        const localDigest = `v${already.version ?? 1}/${hashForLog(localAst)}`
-        const remoteDigest = def.digest ?? "<none>"
-        const schemasDiffer = JSON.stringify(def.payloadSchema) !== localAst
-        if (schemasDiffer) {
+        const localFull = digestOne(already as never)
+        const remoteFull = def.digest
+        if (localFull !== remoteFull) {
+          const caller = args.callerActor ?? "unknown"
           console.warn(
-            `[registry] duplicate type=${def.type} local=${localDigest} remote=${remoteDigest} caller=${args.callerActor ?? "unknown"}`,
+            `[registry] duplicate type=${def.type} local=${localFull.slice(0, 8)} remote=${remoteFull.slice(0, 8)} caller=${caller}`,
           )
         }
         continue
       }
-      // Unknown type — register under a permissive `Schema.Unknown`.
       const synthetic = defineEvent(
         def.type,
         Schema.Unknown as unknown as Schema.Schema<unknown, unknown>,
@@ -62,18 +54,5 @@ export const registryPushHandler = (args: {
       yield* registry.register(synthetic as never).pipe(
         Effect.catchTag("DuplicateEventType", () => Effect.void),
       )
-      accepted++
     }
-
-    return { accepted }
   })
-
-// 8-char deterministic digest for log-readability only; NOT crypto. The
-// `Registry.digest` pipeline in `@rxweave/schema` already uses sha256
-// for the authoritative digest — this short hash is purely so warn
-// lines stay scannable in a terminal.
-function hashForLog(s: string): string {
-  let h = 0
-  for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0
-  return (h >>> 0).toString(16).padStart(8, "0").slice(0, 8)
-}
