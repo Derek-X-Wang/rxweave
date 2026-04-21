@@ -185,6 +185,27 @@
         "vitest": "^2.1.0",
       },
     },
+    "packages/server": {
+      "name": "@rxweave/server",
+      "version": "0.3.0",
+      "dependencies": {
+        "@effect/platform": "^0.96.0",
+        "@effect/platform-bun": "^0.89.0",
+        "@effect/rpc": "^0.75.0",
+        "@rxweave/core": "workspace:^",
+        "@rxweave/protocol": "workspace:^",
+        "@rxweave/schema": "workspace:^",
+        "effect": "^3.21.0",
+      },
+      "devDependencies": {
+        "@effect/vitest": "^0.17.0",
+        "@rxweave/store-file": "workspace:^",
+        "@rxweave/store-memory": "workspace:^",
+        "@types/node": "^22.10.0",
+        "typescript": "^5.5.4",
+        "vitest": "^2.1.0",
+      },
+    },
     "packages/store-cloud": {
       "name": "@rxweave/store-cloud",
       "version": "0.3.0",
@@ -702,6 +723,8 @@
     "@rxweave/runtime": ["@rxweave/runtime@workspace:packages/runtime"],
 
     "@rxweave/schema": ["@rxweave/schema@workspace:packages/schema"],
+
+    "@rxweave/server": ["@rxweave/server@workspace:packages/server"],
 
     "@rxweave/store-cloud": ["@rxweave/store-cloud@workspace:packages/store-cloud"],
 
