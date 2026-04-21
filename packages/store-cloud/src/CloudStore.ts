@@ -65,8 +65,16 @@ import { isRetryable } from "./Retry.js"
 export interface CloudStoreOpts {
   /** Base URL of the cloud's `/rxweave/rpc` endpoint. */
   readonly url: string
-  /** Bearer token provider. Called once per HTTP request. */
-  readonly token: TokenProvider
+  /**
+   * Bearer token provider. Called once per HTTP request. When omitted
+   * (or the provider resolves to `undefined`), outgoing requests carry
+   * no `Authorization` header — used to speak to
+   * `rxweave serve --no-auth` and the canvas app's embedded
+   * local-auth-off server without a second adapter (spec §3.3).
+   * Cloud-bound consumers should keep passing a provider; the widened
+   * type is source-compatible with `() => string`.
+   */
+  readonly token?: TokenProvider
 }
 
 /**
@@ -202,22 +210,36 @@ export const makeCloudEventStore = (
  */
 export const CloudStore = {
   Live: (opts: CloudStoreOpts): Layer.Layer<EventStore, never, EventRegistry> => {
-    // TTL-cache the user-supplied token provider so we call it at most
-    // once per 5 minutes instead of once per RPC request — saves cost
-    // for providers backed by keychains or token-exchange flows.
-    // `withRefreshOn401` inspects response status and invalidates the
-    // cache on 401 so the next request refetches from the provider;
-    // composed AFTER `withBearerToken` so the tap sees the final
-    // request/response pair.
-    const token = cachedToken(opts.token)
+    // Token-less mode (`opts.token` omitted): the canvas app's embedded
+    // local server and `rxweave serve --no-auth` both accept unauthed
+    // requests. Skip the cachedToken wrapping and the refresh-on-401
+    // tap — there's nothing to cache or invalidate — and pass
+    // `() => undefined` through `withBearerToken`, which no-ops the
+    // header. Keeps the transform pipeline uniform so the rest of the
+    // layer (protocol, serialization, RPC client) is unchanged.
+    //
+    // Cloud mode: TTL-cache the user-supplied provider so we call it
+    // at most once per 5 minutes instead of once per RPC request —
+    // saves cost for providers backed by keychains or token-exchange
+    // flows. `withRefreshOn401` inspects response status and
+    // invalidates the cache on 401 so the next request refetches from
+    // the provider; composed AFTER `withBearerToken` so the tap sees
+    // the final request/response pair.
+    const transformClient = opts.token === undefined
+      ? <E, R>(client: HttpClient.HttpClient.With<E, R>) =>
+          withBearerToken(() => undefined)(client)
+      : (() => {
+          const token = cachedToken(opts.token)
+          return <E, R>(client: HttpClient.HttpClient.With<E, R>) =>
+            withRefreshOn401(token)(withBearerToken(token)(client))
+        })()
     // Protocol layer: HTTP over fetch with NDJSON. The bearer token is
     // attached via `transformClient` — `withBearerToken` applies
     // `HttpClient.mapRequestEffect` so each request resolves the token
     // lazily (supports rotating credentials).
     const ProtocolLayer = RpcClient.layerProtocolHttp({
       url: opts.url,
-      transformClient: <E, R>(client: HttpClient.HttpClient.With<E, R>) =>
-        withRefreshOn401(token)(withBearerToken(token)(client)),
+      transformClient,
     }).pipe(
       Layer.provide(FetchHttpClient.layer),
       Layer.provide(RpcSerialization.layerNdjson),
