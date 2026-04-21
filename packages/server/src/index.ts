@@ -1,2 +1,2 @@
 export { Tenant, type TenantShape } from "./Tenant.js"
-// startServer is added in Task 8.
+export { startServer, type ServerHandle, type ServerOpts } from "./Server.js"
