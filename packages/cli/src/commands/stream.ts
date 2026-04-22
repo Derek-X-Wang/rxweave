@@ -55,22 +55,26 @@ export const streamCommand = Command.make(
         { name: "fold", active: Option.isSome(opts.fold) },
       ].filter((m) => m.active)
 
+      // Error paths use Effect.fail with a plain `{_tag, ...}` object —
+      // toErrorPayload preserves the tag so the CLI emits one stderr
+      // line (not two) and exitCodeFor maps to 3 (bad CLI args). The
+      // `!` on terminalModes[n] is load-bearing: the array is filtered
+      // from a statically-sized 3-element tuple and the length guards
+      // above prove the indexed accesses are defined, but TS can't
+      // narrow `.filter(...)` length.
       if (terminalModes.length > 1) {
-        const [a, b] = terminalModes
-        const reason = `--${a!.name} and --${b!.name} are mutually exclusive`
-        yield* out.writeError({
-          _tag: "InvalidStreamOptions",
-          reason,
+        const a = terminalModes[0]!
+        const b = terminalModes[1]!
+        return yield* Effect.fail({
+          _tag: "InvalidStreamOptions" as const,
+          reason: `--${a.name} and --${b.name} are mutually exclusive`,
         })
-        return yield* Effect.fail(new Error(`stream: ${reason}`))
       }
       if (terminalModes.length === 1 && opts.follow) {
-        const reason = `--follow cannot be combined with --${terminalModes[0]!.name}`
-        yield* out.writeError({
-          _tag: "InvalidStreamOptions",
-          reason,
+        return yield* Effect.fail({
+          _tag: "InvalidStreamOptions" as const,
+          reason: `--follow cannot be combined with --${terminalModes[0]!.name}`,
         })
-        return yield* Effect.fail(new Error(`stream: ${reason}`))
       }
 
       // --- Task 15: --count ---------------------------------------------
@@ -97,12 +101,11 @@ export const streamCommand = Command.make(
       if (Option.isSome(opts.fold)) {
         const name = opts.fold.value
         if (!isBuiltinFoldName(name)) {
-          yield* out.writeError({
-            _tag: "UnknownFold",
+          return yield* Effect.fail({
+            _tag: "UnknownFold" as const,
             name,
             available: Object.keys(BUILTIN_FOLDS),
           })
-          return yield* Effect.fail(new Error(`stream: unknown fold "${name}"`))
         }
         const fold = BUILTIN_FOLDS[name]
         const events = yield* store.query(fold.on, Number.MAX_SAFE_INTEGER)

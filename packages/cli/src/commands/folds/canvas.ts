@@ -36,39 +36,33 @@ export const canvasFold = {
 
   initial: (): CanvasState => ({ shapes: {}, bindings: {} }),
 
+  // Mutates the passed-in state rather than spreading on every event.
+  // Safe because this fold is terminal — the CLI builds state up once
+  // via Array.reduce and emits it exactly once to stdout. Dense logs
+  // (10k upserts on 1k shapes) previously did ~5M object allocations
+  // from the shape-map spread; now it's zero. The public `CanvasState`
+  // type still marks fields `Record<string, unknown>` so external
+  // consumers (if any) see immutable-looking shape; the mutation is
+  // internal to this fold's reduction loop.
   reduce: (event: EventEnvelope, state: CanvasState): CanvasState => {
     const p = event.payload as {
       readonly record?: { readonly id: string }
       readonly id?: string
     }
+    const shapes = state.shapes as Record<string, unknown>
+    const bindings = state.bindings as Record<string, unknown>
     switch (event.type) {
       case "canvas.shape.upserted":
-        if (p.record?.id) {
-          return {
-            ...state,
-            shapes: { ...state.shapes, [p.record.id]: p.record },
-          }
-        }
+        if (p.record?.id) shapes[p.record.id] = p.record
         return state
       case "canvas.shape.deleted":
-        if (p.id) {
-          const { [p.id]: _removed, ...rest } = state.shapes
-          return { ...state, shapes: rest }
-        }
+        if (p.id) delete shapes[p.id]
         return state
       case "canvas.binding.upserted":
-        if (p.record?.id) {
-          return {
-            ...state,
-            bindings: { ...state.bindings, [p.record.id]: p.record },
-          }
-        }
+        if (p.record?.id) bindings[p.record.id] = p.record
         return state
       case "canvas.binding.deleted":
-        if (p.id) {
-          const { [p.id]: _removed, ...rest } = state.bindings
-          return { ...state, bindings: rest }
-        }
+        if (p.id) delete bindings[p.id]
         return state
       default:
         return state

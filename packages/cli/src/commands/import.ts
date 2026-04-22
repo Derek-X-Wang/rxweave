@@ -1,7 +1,8 @@
 import { Command, Options } from "@effect/cli"
-import { Effect, Option } from "effect"
+import { Effect, Option, Schema } from "effect"
 import { readFile } from "node:fs/promises"
 import { EventStore } from "@rxweave/core"
+import { EventRegistry } from "@rxweave/schema"
 import type { ActorId, EventInput, Source } from "@rxweave/schema"
 import { Output } from "../Output.js"
 
@@ -45,26 +46,42 @@ type WireInput = {
   readonly source?: Source
 }
 
+const isWireLike = (v: unknown): v is WireInput =>
+  typeof v === "object" &&
+  v !== null &&
+  typeof (v as { type?: unknown }).type === "string"
+
 const parseFile = (text: string): ReadonlyArray<WireInput> => {
   const trimmed = text.trim()
   if (trimmed.length === 0) return []
-  // Shape-based detection. A leading `[` is the only legal start for a
-  // JSON array of objects, so we try that branch first. JSON.parse
-  // throws on malformed input, which becomes a fiber failure caught
-  // by bin/rxweave.ts — same failure path emit.ts uses for a bad
-  // --payload, exit code 1.
+  // Shape detection. Leading `[` triggers JSON-array parse; otherwise
+  // NDJSON. Each element must look like a wire input (object with a
+  // string `type`) — otherwise the store's schema validation would
+  // fail downstream with an opaque error. Reject up front with a
+  // clearer message.
   if (trimmed.startsWith("[")) {
     const parsed = JSON.parse(trimmed) as unknown
     if (!Array.isArray(parsed)) {
       throw new Error("import: file starts with '[' but did not parse as a JSON array")
     }
+    for (const entry of parsed) {
+      if (!isWireLike(entry)) {
+        throw new Error("import: JSON array entries must be objects with a string 'type' field")
+      }
+    }
     return parsed as ReadonlyArray<WireInput>
   }
-  return text
-    .split("\n")
-    .map((l) => l.trim())
-    .filter((l) => l.length > 0)
-    .map((l) => JSON.parse(l) as WireInput)
+  const out: Array<WireInput> = []
+  for (const raw of text.split("\n")) {
+    const l = raw.trim()
+    if (l.length === 0) continue
+    const entry = JSON.parse(l) as unknown
+    if (!isWireLike(entry)) {
+      throw new Error("import: NDJSON lines must be objects with a string 'type' field")
+    }
+    out.push(entry)
+  }
+  return out
 }
 
 export const importCommand = Command.make(
@@ -78,12 +95,21 @@ export const importCommand = Command.make(
 
       const actorOverride = Option.isSome(actor) ? actor.value : null
 
-      const events: Array<EventInput> = parsed.map((wire) => ({
-        type: wire.type,
-        actor: ((actorOverride ?? wire.actor ?? "cli") as ActorId),
-        source: ((wire.source ?? "cli") as Source),
-        payload: wire.payload,
-      } as unknown as EventInput))
+      // Validate every payload against the configured registry before
+      // appending — same check `emit.ts --batch` performs. Restore-
+      // from-backup must not corrupt the log (spec §9.1).
+      const registry = yield* EventRegistry
+      const events: Array<EventInput> = []
+      for (const wire of parsed) {
+        const def = yield* registry.lookup(wire.type)
+        const payload = yield* Schema.decodeUnknown(def.payload)(wire.payload)
+        events.push({
+          type: wire.type,
+          actor: ((actorOverride ?? wire.actor ?? "cli") as ActorId),
+          source: ((wire.source ?? "cli") as Source),
+          payload,
+        } as unknown as EventInput)
+      }
 
       if (dryRun) {
         yield* out.writeLine(

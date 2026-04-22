@@ -3,10 +3,10 @@ import { it } from "@effect/vitest"
 import { mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { Effect, Layer, Option } from "effect"
+import { Effect, Layer, Option, Schema } from "effect"
 import { MemoryStore } from "@rxweave/store-memory"
 import { EventStore } from "@rxweave/core"
-import { EventRegistry } from "@rxweave/schema"
+import { EventRegistry, defineEvent } from "@rxweave/schema"
 import { Output } from "../src/Output.js"
 import { importCommand } from "../src/commands/import.js"
 
@@ -15,9 +15,22 @@ import { importCommand } from "../src/commands/import.js"
 // `importCommand.handler({...opts})` directly with the option shape
 // `Command.make(name, cfg, handler)` produces.
 
+// Every import test uses demo.* types — register them with Schema.Unknown
+// so the handler's payload-validation pass accepts any payload shape
+// (tests vary between `{n}` and `{}`). The Phase E review enforced that
+// import now validates like emit --batch, so each type must be known.
+const registerDemoSchemas = Effect.gen(function* () {
+  const reg = yield* EventRegistry
+  for (const t of ["demo.ping", "demo.pong", "demo.pang"] as const) {
+    const def = defineEvent(t, Schema.Unknown as unknown as Schema.Schema<unknown, unknown>)
+    yield* reg.register(def as never).pipe(Effect.orElseSucceed(() => undefined))
+  }
+})
+
 describe("import command", () => {
   it.effect("dry-run prints event types without appending", () =>
     Effect.gen(function* () {
+      yield* registerDemoSchemas
       const dir = mkdtempSync(join(tmpdir(), "rxweave-import-"))
       const file = join(dir, "seed.jsonl")
       writeFileSync(
@@ -68,6 +81,7 @@ describe("import command", () => {
 
   it.effect("appends events from NDJSON file", () =>
     Effect.gen(function* () {
+      yield* registerDemoSchemas
       const dir = mkdtempSync(join(tmpdir(), "rxweave-import-"))
       const file = join(dir, "seed.jsonl")
       writeFileSync(
@@ -119,6 +133,7 @@ describe("import command", () => {
 
   it.effect("appends events from JSON-array file", () =>
     Effect.gen(function* () {
+      yield* registerDemoSchemas
       const dir = mkdtempSync(join(tmpdir(), "rxweave-import-"))
       const file = join(dir, "seed.json")
       writeFileSync(
@@ -162,6 +177,7 @@ describe("import command", () => {
 
   it.effect("--actor overrides actor on every event", () =>
     Effect.gen(function* () {
+      yield* registerDemoSchemas
       const dir = mkdtempSync(join(tmpdir(), "rxweave-import-"))
       const file = join(dir, "seed.jsonl")
       writeFileSync(

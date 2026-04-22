@@ -92,11 +92,18 @@ describe("serve command", () => {
       )
 
       expect(result._tag).toBe("Left")
-      // The refusal message goes to stderr (writeError).
-      const combined = [...lines, ...errors].join("\n")
-      expect(combined).toMatch(
-        /refusing to serve unauthenticated on 0\.0\.0\.0/,
-      )
+      // The handler fails with a plain `{_tag, reason}` object that
+      // bin/rxweave.ts renders to stderr via toErrorPayload + exits
+      // with exitCodeFor("UnsafeServerConfig") = 3. Tests invoke the
+      // handler directly, so assert on the failure channel — stderr
+      // plumbing is the bin's concern, not this handler's.
+      if (result._tag === "Left") {
+        const err = result.left as { _tag?: string; reason?: string }
+        expect(err._tag).toBe("UnsafeServerConfig")
+        expect(err.reason ?? "").toMatch(
+          /refusing to serve unauthenticated on 0\.0\.0\.0/,
+        )
+      }
     }),
   )
 

@@ -78,16 +78,11 @@ export const serveCommand = Command.make(
       // Fail-closed — callers who genuinely need this have to pass a
       // token explicitly.
       if (host === "0.0.0.0" && noAuth) {
-        yield* out.writeError({
-          _tag: "UnsafeServerConfig",
+        return yield* Effect.fail({
+          _tag: "UnsafeServerConfig" as const,
           reason:
-            "[rxweave] refusing to serve unauthenticated on 0.0.0.0 — pass a token or bind to 127.0.0.1",
-        })
-        return yield* Effect.fail(
-          new Error(
             "refusing to serve unauthenticated on 0.0.0.0 — pass --token or bind to 127.0.0.1",
-          ),
-        )
+        })
       }
 
       // Token provisioning. `bearer` is the list we hand to the

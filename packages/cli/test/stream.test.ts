@@ -1,6 +1,6 @@
 import { describe, expect } from "vitest"
 import { it } from "@effect/vitest"
-import { Duration, Effect, Exit, Fiber, Layer, Option, Schema } from "effect"
+import { Cause, Duration, Effect, Exit, Fiber, Layer, Option, Schema } from "effect"
 import { MemoryStore } from "@rxweave/store-memory"
 import { EventStore } from "@rxweave/core"
 import { EventRegistry, defineEvent } from "@rxweave/schema"
@@ -220,11 +220,20 @@ describe("stream command", () => {
         .pipe(Effect.provide(out), Effect.exit)
 
       expect(Exit.isFailure(result)).toBe(true)
-      // Structured error on stderr identifies this as a bad fold name —
-      // agents parse the _tag to decide whether to retry or abort.
-      const combined = errors.join("\n")
-      expect(combined).toMatch(/UnknownFold/)
-      expect(combined).toMatch(/no-such-fold/)
+      // Handler fails with a plain `{_tag, ...}` payload — bin/rxweave.ts's
+      // top-level error handler renders it to stderr via toErrorPayload.
+      // Tests invoke the handler directly, so assert on the failure
+      // channel rather than captured stderr.
+      const cause = Exit.isFailure(result) ? result.cause : null
+      const failure = cause
+        ? (Cause.failureOption(cause) as Option.Option<{ _tag: string; name?: string }>)
+        : Option.none()
+      expect(Option.isSome(failure)).toBe(true)
+      if (Option.isSome(failure)) {
+        expect(failure.value._tag).toBe("UnknownFold")
+        expect(failure.value.name).toBe("no-such-fold")
+      }
+      expect(errors.length).toBe(0)
     }).pipe(
       Effect.provide(MemoryStore.Live),
       Effect.provide(EventRegistry.Live),
@@ -243,10 +252,18 @@ describe("stream command", () => {
         .pipe(Effect.provide(out), Effect.exit)
 
       expect(Exit.isFailure(result)).toBe(true)
-      const combined = errors.join("\n")
-      expect(combined).toMatch(/InvalidStreamOptions/)
-      expect(combined).toMatch(/follow/)
-      expect(combined).toMatch(/count/)
+      const failure = Exit.isFailure(result)
+        ? (Cause.failureOption(result.cause) as Option.Option<{
+            _tag: string
+            reason?: string
+          }>)
+        : Option.none()
+      expect(Option.isSome(failure)).toBe(true)
+      if (Option.isSome(failure)) {
+        expect(failure.value._tag).toBe("InvalidStreamOptions")
+        expect(failure.value.reason ?? "").toMatch(/follow/)
+        expect(failure.value.reason ?? "").toMatch(/count/)
+      }
     }).pipe(
       Effect.provide(MemoryStore.Live),
       Effect.provide(EventRegistry.Live),
@@ -268,8 +285,13 @@ describe("stream command", () => {
         .pipe(Effect.provide(out), Effect.exit)
 
       expect(Exit.isFailure(result)).toBe(true)
-      const combined = errors.join("\n")
-      expect(combined).toMatch(/InvalidStreamOptions/)
+      const failure = Exit.isFailure(result)
+        ? (Cause.failureOption(result.cause) as Option.Option<{ _tag: string }>)
+        : Option.none()
+      expect(Option.isSome(failure)).toBe(true)
+      if (Option.isSome(failure)) {
+        expect(failure.value._tag).toBe("InvalidStreamOptions")
+      }
     }).pipe(
       Effect.provide(MemoryStore.Live),
       Effect.provide(EventRegistry.Live),
@@ -291,8 +313,13 @@ describe("stream command", () => {
         .pipe(Effect.provide(out), Effect.exit)
 
       expect(Exit.isFailure(result)).toBe(true)
-      const combined = errors.join("\n")
-      expect(combined).toMatch(/InvalidStreamOptions/)
+      const failure = Exit.isFailure(result)
+        ? (Cause.failureOption(result.cause) as Option.Option<{ _tag: string }>)
+        : Option.none()
+      expect(Option.isSome(failure)).toBe(true)
+      if (Option.isSome(failure)) {
+        expect(failure.value._tag).toBe("InvalidStreamOptions")
+      }
     }).pipe(
       Effect.provide(MemoryStore.Live),
       Effect.provide(EventRegistry.Live),
