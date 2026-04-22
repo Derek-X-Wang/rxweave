@@ -5,15 +5,22 @@ from that cursor — no gaps, no duplicates.
 
 ```bash
 # 1. Save a checkpoint before starting work.
+mkdir -p .agent
 cursor=$(rxweave cursor)
 printf '%s\n' "$cursor" > .agent/checkpoint
 
 # 2. Emit events, make decisions, write side-effects…
 rxweave emit my.event.type --payload '{"ok":true}'
 
-# 3. Agent crashes. On restart, resume from the saved cursor:
+# 3. Agent crashes. On restart, resume from the saved cursor.
+#    An empty checkpoint file means the store was empty when we
+#    started — fall back to following from the beginning.
 cursor=$(cat .agent/checkpoint)
-rxweave stream --follow --from-cursor "$cursor" | my-agent
+if [ -z "$cursor" ]; then
+  rxweave stream --follow | my-agent
+else
+  rxweave stream --follow --from-cursor "$cursor" | my-agent
+fi
 ```
 
 `rxweave cursor` prints the current head event id on stdout as a
