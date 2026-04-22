@@ -64,6 +64,21 @@ The server forks `supervise([suggesterAgent])` when either key is present. The a
 | `canvas.binding.upserted` | `{ record: TLBinding }` |
 | `canvas.binding.deleted` | `{ id: TLBindingId }` |
 
+## Bundle size budget
+
+Spec §11 caps Phase F's growth in the `apps/web` production bundle at **200 KB gzipped** over the pre-Phase-F baseline (the `@rxweave/store-cloud` adoption is the only meaningful new weight).
+
+To measure:
+
+```bash
+cd apps/web
+bun run bundle:measure
+```
+
+This runs `vite build` and then `scripts/bundle-report.ts`, which walks `dist/` and prints raw + gzipped totals for every JS/CSS asset plus a grand total. Per-file gzip is not the same as a single concatenated gzip stream, so treat it as an upper-bound estimate.
+
+Today most of the weight (~650 KB gzipped) is tldraw + React + Effect + `ai` + `@rxweave/store-cloud`'s effect-rpc client. The growth check is against the stored baseline captured in the git log for the commit that introduced this script, not against the absolute total.
+
 ## Known limitations
 
 - Single-user. Multi-user requires pointing the bridge at RxWeave Cloud instead of the local server — trivial schema-wise, needs a cloud deployment.

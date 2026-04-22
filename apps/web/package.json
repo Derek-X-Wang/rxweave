@@ -8,6 +8,8 @@
     "dev:server": "bun --watch server/server.ts",
     "dev:web": "vite",
     "build": "vite build",
+    "bundle:measure": "vite build --mode production && bun run bundle:report",
+    "bundle:report": "bun run ./scripts/bundle-report.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
