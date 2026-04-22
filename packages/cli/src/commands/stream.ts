@@ -86,8 +86,13 @@ export const streamCommand = Command.make(
 
       // --- Task 16: --last N --------------------------------------------
       if (Option.isSome(opts.last)) {
+        // Clamp N to [0, ...]. `Array.slice(-0)` returns the whole array
+        // (not empty), and negative N would also misbehave — callers
+        // passing `--last 0` should get zero events, not everything.
+        const n = Math.max(0, Math.floor(opts.last.value))
+        if (n === 0) return
         const all = yield* store.query(filter, Number.MAX_SAFE_INTEGER)
-        const tail = all.slice(-opts.last.value)
+        const tail = all.slice(-n)
         for (const e of tail) yield* out.writeLine(e)
         return
       }
