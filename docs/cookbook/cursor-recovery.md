@@ -53,6 +53,9 @@ rxweave agent list            # cursors for all agents
 rxweave agent status <id>     # { agentId, cursor, fiberStatus }
 ```
 
-`AgentCursorStore.Memory` is the default (resets on process restart).
-A persistent implementation is planned — until it lands, use the
-file-based pattern above for crash recovery.
+`AgentCursorStore.Memory` is ephemeral (resets on process restart).
+Pass `AgentCursorStore.File({ path: ".rxweave/cursors.json" })` when
+building the runtime layer for crash-durable checkpoints — it
+`fsync`s on every `set()` so a hard kill preserves the last-saved
+cursor. The shell pattern above is still useful for agents that run
+outside `supervise([...])`.

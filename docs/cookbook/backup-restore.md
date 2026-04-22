@@ -21,7 +21,7 @@ rxweave serve
 
 ```bash
 pkill -TERM -f "rxweave serve"
-cp backups/stream-20260422-030000.jsonl .rxweave/stream.jsonl
+cp "$(ls -t backups/stream-*.jsonl | head -1)" .rxweave/stream.jsonl
 rxweave serve
 ```
 

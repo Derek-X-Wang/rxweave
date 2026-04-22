@@ -1,5 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "bun:test"
-import { FetchHttpClient } from "@effect/platform"
+import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import { Effect, Fiber, Layer, Ref, Schema, Stream } from "effect"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -8,40 +7,25 @@ import { EventStore } from "@rxweave/core"
 import { EventRegistry, defineEvent } from "@rxweave/schema"
 import { MemoryStore } from "@rxweave/store-memory"
 import { FileStore } from "@rxweave/store-file"
-import { CloudStore } from "@rxweave/store-cloud"
 import { startServer } from "../src/Server.js"
+import { testClientLayer, waitUntil } from "./support.js"
 
-/**
- * Spec §11 reliability gates. Two scenarios:
- *
- *   1. Client crash + resume: first client emits N events, snapshots
- *      the cursor, "crashes" (tears down its managed runtime). A
- *      second client connects with `--from-cursor <snapshot>` after
- *      additional events landed in between, and receives EXACTLY the
- *      new events — no gaps, no duplicates, no dropped first-event
- *      off-by-one.
- *
- *   2. Server restart with same on-disk log: FileStore server takes N
- *      events, the server's scope closes, a fresh server boots against
- *      the same `.jsonl` path, query returns the same N events in the
- *      same order.
- *
- * Runner: `bun:test`. `startServer` needs `Bun.serve`, which vitest
- * under Node doesn't have.
- */
+// Spec §11 reliability gates: client-crash + resume, server-restart
+// recovery. `bun:test` — `startServer` needs `Bun.serve`.
 
 const Ping = defineEvent(
   "test.reliability",
   Schema.Struct({ n: Schema.Number }),
 )
+const ping = (n: number) => ({
+  type: Ping.type,
+  payload: { n },
+})
 
 describe("reliability — client crash + resume", () => {
-  it("resumes from saved cursor with no gaps or duplicates", async () => {
+  it("delivers strictly-after-cursor events on reconnect", async () => {
     await Effect.scoped(
       Effect.gen(function* () {
-        // Shared server-side EventStore + EventRegistry instances so
-        // direct appends in the test body and the RPC handlers
-        // mounted by startServer both hit the same singletons.
         const serverStore = yield* EventStore
         const serverReg = yield* EventRegistry
         yield* serverReg.register(Ping)
@@ -53,69 +37,26 @@ describe("reliability — client crash + resume", () => {
           host: "127.0.0.1",
         })
 
-        const clientLayer = (scopeTag: string) =>
-          CloudStore.Live({
-            url: `http://127.0.0.1:${handle.port}/rxweave/rpc`,
-          }).pipe(
-            Layer.provideMerge(EventRegistry.Live),
-            Layer.provide(FetchHttpClient.layer),
-            // Scope tag only surfaces in Effect spans — makes test
-            // traces distinguishable when debugging.
-            Layer.annotateLogs("client", scopeTag),
-          )
-
-        // Client A: emits 3 events, reads latestCursor, disconnects.
+        // Client A: emits 3 events, snapshots its latestCursor, then
+        // its scope closes (simulated crash — the managed runtime
+        // teardown matches what a SIGKILL'd client leaves behind).
         const phase1 = yield* Effect.scoped(
           Effect.gen(function* () {
             const clientReg = yield* EventRegistry
             yield* clientReg.register(Ping)
             const clientStore = yield* EventStore
-            yield* clientStore.append([
-              {
-                type: Ping.type,
-                actor: "cli" as never,
-                source: "cli" as never,
-                payload: { n: 1 },
-              },
-              {
-                type: Ping.type,
-                actor: "cli" as never,
-                source: "cli" as never,
-                payload: { n: 2 },
-              },
-              {
-                type: Ping.type,
-                actor: "cli" as never,
-                source: "cli" as never,
-                payload: { n: 3 },
-              },
-            ])
-            const savedCursor = yield* clientStore.latestCursor
-            return { savedCursor }
-          }).pipe(Effect.provide(clientLayer("A"))),
+            yield* clientStore.append([ping(1), ping(2), ping(3)])
+            return { savedCursor: yield* clientStore.latestCursor }
+          }).pipe(Effect.provide(testClientLayer(handle.port))),
         )
         expect(phase1.savedCursor).not.toBe("earliest")
 
-        // Between A's crash and B's reconnect, more events land. These
-        // are what B must receive — STRICTLY AFTER the saved cursor.
-        const interimAppends = yield* serverStore.append([
-          {
-            type: Ping.type,
-            actor: "cli" as never,
-            source: "cli" as never,
-            payload: { n: 4 },
-          },
-          {
-            type: Ping.type,
-            actor: "cli" as never,
-            source: "cli" as never,
-            payload: { n: 5 },
-          },
-        ])
+        // Interim appends — these are what client B must receive.
+        const interim = yield* serverStore.append([ping(4), ping(5)])
 
-        // Client B: subscribes --from-cursor <savedCursor>. Must
-        // receive events 4, 5 — NOT 1, 2, 3 (those are before the
-        // cursor) and NOT duplicates of either.
+        // Client B: subscribes --from-cursor savedCursor. Must
+        // receive ONLY the interim events (strict cursor-exclusive
+        // semantics — no duplicates of 1-3, no gap past the cursor).
         const received = yield* Ref.make<Array<number>>([])
         const subFiber = yield* Effect.forkScoped(
           Effect.gen(function* () {
@@ -125,19 +66,18 @@ describe("reliability — client crash + resume", () => {
             yield* Stream.runForEach(
               clientStore.subscribe({ cursor: phase1.savedCursor }),
               (event) =>
-                Effect.sync(() => {
-                  const payload = event.payload as { n: number }
-                  return Ref.update(received, (arr) => [...arr, payload.n])
-                }).pipe(Effect.flatten),
+                Ref.update(received, (arr) => [
+                  ...arr,
+                  (event.payload as { n: number }).n,
+                ]),
             )
-          }).pipe(Effect.provide(clientLayer("B"))),
+          }).pipe(Effect.provide(testClientLayer(handle.port))),
         )
 
-        yield* Effect.sleep("800 millis")
-        const after = yield* Ref.get(received)
-        expect(after).toEqual([4, 5])
-        expect(interimAppends[0]!.payload).toEqual({ n: 4 })
-        expect(interimAppends[1]!.payload).toEqual({ n: 5 })
+        const final = yield* waitUntil(received, (arr) => arr.length >= 2)
+        expect(final).toEqual([4, 5])
+        expect(interim[0]!.payload).toEqual({ n: 4 })
+        expect(interim[1]!.payload).toEqual({ n: 5 })
 
         yield* Fiber.interrupt(subFiber)
       }),
@@ -149,14 +89,14 @@ describe("reliability — client crash + resume", () => {
 })
 
 describe("reliability — server restart recovery", () => {
-  // Each test case gets its own tempdir so concurrent runs can't share
-  // a .jsonl file. rmSync with force: true tolerates the cleanup
-  // racing a lingering handle on slow CI.
+  // Per-case tempdir so the second `it` (whenever it lands) can't race
+  // on `stream.jsonl`. rmSync with force:true tolerates cleanup racing
+  // a lingering handle on slow CI.
   let tmpDir: string
-  beforeAll(() => {
+  beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), "rxweave-reliability-"))
   })
-  afterAll(() => {
+  afterEach(() => {
     rmSync(tmpDir, { recursive: true, force: true })
   })
 
@@ -164,92 +104,51 @@ describe("reliability — server restart recovery", () => {
     const storePath = join(tmpDir, "stream.jsonl")
     const FileStoreLive = FileStore.Live({ path: storePath }).pipe(Layer.orDie)
 
-    // Boot 1: emit 3 events via a fresh server + client, then let the
-    // scope close (which tears down the Bun listener AND the FileStore
-    // writer — the .jsonl file must be flushed + closed before boot 2
-    // opens it, otherwise the scan-on-recover sees a truncated tail).
-    const ids1 = await Effect.scoped(
-      Effect.gen(function* () {
-        const store = yield* EventStore
-        const reg = yield* EventRegistry
-        yield* reg.register(Ping)
-        const handle = yield* startServer({
-          store: Layer.succeed(EventStore, store),
-          registry: Layer.succeed(EventRegistry, reg),
-          port: 0,
-          host: "127.0.0.1",
-        })
-        const clientLayer = CloudStore.Live({
-          url: `http://127.0.0.1:${handle.port}/rxweave/rpc`,
-        }).pipe(
-          Layer.provideMerge(EventRegistry.Live),
-          Layer.provide(FetchHttpClient.layer),
-        )
-        const appended = yield* Effect.gen(function* () {
-          const clientReg = yield* EventRegistry
-          yield* clientReg.register(Ping)
-          const clientStore = yield* EventStore
-          return yield* clientStore.append([
-            {
-              type: Ping.type,
-              actor: "cli" as never,
-              source: "cli" as never,
-              payload: { n: 1 },
-            },
-            {
-              type: Ping.type,
-              actor: "cli" as never,
-              source: "cli" as never,
-              payload: { n: 2 },
-            },
-            {
-              type: Ping.type,
-              actor: "cli" as never,
-              source: "cli" as never,
-              payload: { n: 3 },
-            },
-          ])
-        }).pipe(Effect.provide(clientLayer))
-        return appended.map((e) => e.id)
-      }),
-    ).pipe(
-      Effect.provide(Layer.mergeAll(FileStoreLive, EventRegistry.Live)),
-      Effect.runPromise,
+    // Boot N: spin up server + client, run `body`, tear down. Returned
+    // Effect is scoped so the Bun listener AND FileStore writer close
+    // before the caller moves on — critical for boot-1 → boot-2
+    // ordering, otherwise boot-2's scan-on-recover may see a
+    // half-flushed tail.
+    const boot = <A>(
+      body: (store: EventStore["Type"]) => Effect.Effect<
+        A,
+        unknown,
+        EventStore | EventRegistry
+      >,
+    ) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const store = yield* EventStore
+          const reg = yield* EventRegistry
+          yield* reg.register(Ping)
+          const handle = yield* startServer({
+            store: Layer.succeed(EventStore, store),
+            registry: Layer.succeed(EventRegistry, reg),
+            port: 0,
+            host: "127.0.0.1",
+          })
+          return yield* Effect.gen(function* () {
+            const clientReg = yield* EventRegistry
+            yield* clientReg.register(Ping)
+            const clientStore = yield* EventStore
+            return yield* body(clientStore)
+          }).pipe(Effect.provide(testClientLayer(handle.port)))
+        }),
+      ).pipe(
+        Effect.provide(Layer.mergeAll(FileStoreLive, EventRegistry.Live)),
+        Effect.runPromise,
+      )
+
+    const appended = await boot((store) =>
+      store.append([ping(1), ping(2), ping(3)]),
     )
+    const ids1 = appended.map((e) => e.id)
     expect(ids1.length).toBe(3)
 
-    // Boot 2: brand-new server instance (fresh port, fresh scope) on
-    // the same .jsonl. Query returns the same 3 events in the same
-    // order — proves FileStore's scan-on-recover parses the append-
-    // only log faithfully.
-    const queried = await Effect.scoped(
-      Effect.gen(function* () {
-        const store = yield* EventStore
-        const reg = yield* EventRegistry
-        yield* reg.register(Ping)
-        const handle = yield* startServer({
-          store: Layer.succeed(EventStore, store),
-          registry: Layer.succeed(EventRegistry, reg),
-          port: 0,
-          host: "127.0.0.1",
-        })
-        const clientLayer = CloudStore.Live({
-          url: `http://127.0.0.1:${handle.port}/rxweave/rpc`,
-        }).pipe(
-          Layer.provideMerge(EventRegistry.Live),
-          Layer.provide(FetchHttpClient.layer),
-        )
-        return yield* Effect.gen(function* () {
-          const clientReg = yield* EventRegistry
-          yield* clientReg.register(Ping)
-          const clientStore = yield* EventStore
-          return yield* clientStore.query({}, 100)
-        }).pipe(Effect.provide(clientLayer))
-      }),
-    ).pipe(
-      Effect.provide(Layer.mergeAll(FileStoreLive, EventRegistry.Live)),
-      Effect.runPromise,
-    )
+    // Fresh server instance (new port, new scope) on the same path.
+    // Proves FileStore's scan-on-recover parses the append-only log
+    // faithfully across a process boundary.
+    const queried = await boot((store) => store.query({}, ids1.length))
     expect(queried.length).toBe(3)
     expect(queried.map((e) => e.id)).toEqual(ids1)
     expect(queried.map((e) => (e.payload as { n: number }).n)).toEqual([
