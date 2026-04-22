@@ -5,7 +5,7 @@ A shared whiteboard demo built on RxWeave: every action is an event in the strea
 ## Run
 
 ```bash
-cd apps/canvas
+cd apps/web
 bun install
 bun run dev
 ```
