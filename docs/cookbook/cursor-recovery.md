@@ -13,8 +13,6 @@ printf '%s\n' "$cursor" > .agent/checkpoint
 rxweave emit my.event.type --payload '{"ok":true}'
 
 # 3. Agent crashes. On restart, resume from the saved cursor.
-#    An empty checkpoint file means the store was empty when we
-#    started — fall back to following from the beginning.
 cursor=$(cat .agent/checkpoint)
 if [ -z "$cursor" ]; then
   rxweave stream --follow | my-agent
@@ -60,9 +58,8 @@ rxweave agent list            # cursors for all agents
 rxweave agent status <id>     # { agentId, cursor, fiberStatus }
 ```
 
-`AgentCursorStore.Memory` is ephemeral (resets on process restart).
-Pass `AgentCursorStore.File({ path: ".rxweave/cursors.json" })` when
-building the runtime layer for crash-durable checkpoints — it
-`fsync`s on every `set()` so a hard kill preserves the last-saved
-cursor. The shell pattern above is still useful for agents that run
-outside `supervise([...])`.
+Pass `AgentCursorStore.File({ path: ".rxweave/cursors.json" })` to the
+runtime layer for crash-durable checkpoints (tsdoc in
+`packages/runtime/src/AgentCursorStore.ts` has the fsync details). The
+default `Memory` variant is ephemeral. The shell pattern above still
+applies to agents that run outside `supervise([...])`.

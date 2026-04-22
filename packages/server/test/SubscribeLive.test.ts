@@ -6,13 +6,10 @@ import { MemoryStore } from "@rxweave/store-memory"
 import { startServer } from "../src/Server.js"
 import { testClientLayer, waitUntil } from "./support.js"
 
-// Covers the replay→live transition through HTTP/NDJSON that the
-// Conformance harness skips: its ordering test appends BEFORE
-// subscribing (reads out of the snapshot) and its flood case only
-// asserts `processed > 0`. A regression here would silently
-// re-break live delivery after a non-trivial replay burst.
-//
-// Runner: `bun:test` — `BunHttpServer.layer` needs `Bun.serve`.
+// Covers the replay → live transition over HTTP/NDJSON. Conformance
+// skips it (its ordering test appends before subscribing, the flood
+// case only asserts processed > 0). `bun:test` — startServer needs
+// Bun.serve.
 
 const Ping = defineEvent(
   "test.subscribe.live",

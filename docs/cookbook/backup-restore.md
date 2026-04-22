@@ -6,8 +6,6 @@ round-trips cleanly.
 
 ```bash
 # 1. Stop the server so the copy captures a consistent snapshot.
-#    (An in-flight append is a partial line the scanner will truncate
-#    on recovery — safe but ambiguous for backups.)
 pkill -TERM -f "rxweave serve"
 
 # 2. Copy the log file.

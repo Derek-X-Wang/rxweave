@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
-import { Effect, Fiber, Layer, Ref, Schema, Stream } from "effect"
+import { Chunk, Effect, Layer, Schema, Stream } from "effect"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -8,7 +8,7 @@ import { EventRegistry, defineEvent } from "@rxweave/schema"
 import { MemoryStore } from "@rxweave/store-memory"
 import { FileStore } from "@rxweave/store-file"
 import { startServer } from "../src/Server.js"
-import { testClientLayer, waitUntil } from "./support.js"
+import { testClientLayer } from "./support.js"
 
 // Spec §11 reliability gates: client-crash + resume, server-restart
 // recovery. `bun:test` — `startServer` needs `Bun.serve`.
@@ -54,32 +54,26 @@ describe("reliability — client crash + resume", () => {
         // Interim appends — these are what client B must receive.
         const interim = yield* serverStore.append([ping(4), ping(5)])
 
-        // Client B: subscribes --from-cursor savedCursor. Must
-        // receive ONLY the interim events (strict cursor-exclusive
-        // semantics — no duplicates of 1-3, no gap past the cursor).
-        const received = yield* Ref.make<Array<number>>([])
-        const subFiber = yield* Effect.forkScoped(
-          Effect.gen(function* () {
-            const clientReg = yield* EventRegistry
-            yield* clientReg.register(Ping)
-            const clientStore = yield* EventStore
-            yield* Stream.runForEach(
-              clientStore.subscribe({ cursor: phase1.savedCursor }),
-              (event) =>
-                Ref.update(received, (arr) => [
-                  ...arr,
-                  (event.payload as { n: number }).n,
-                ]),
-            )
-          }).pipe(Effect.provide(testClientLayer(handle.port))),
-        )
+        // Client B: subscribes from the saved cursor and takes exactly
+        // 2 events. `Stream.take(2)` terminates the stream as soon as
+        // the second event arrives, so the whole assertion resolves
+        // deterministically without an explicit fiber/timeout dance.
+        const collected = yield* Effect.gen(function* () {
+          const clientReg = yield* EventRegistry
+          yield* clientReg.register(Ping)
+          const clientStore = yield* EventStore
+          return yield* clientStore
+            .subscribe({ cursor: phase1.savedCursor })
+            .pipe(Stream.take(2), Stream.runCollect)
+        }).pipe(Effect.provide(testClientLayer(handle.port)))
 
-        const final = yield* waitUntil(received, (arr) => arr.length >= 2)
-        expect(final).toEqual([4, 5])
+        const payloads = Array.from(
+          Chunk.toReadonlyArray(collected),
+          (e) => (e.payload as { n: number }).n,
+        )
+        expect(payloads).toEqual([4, 5])
         expect(interim[0]!.payload).toEqual({ n: 4 })
         expect(interim[1]!.payload).toEqual({ n: 5 })
-
-        yield* Fiber.interrupt(subFiber)
       }),
     ).pipe(
       Effect.provide(Layer.mergeAll(MemoryStore.Live, EventRegistry.Live)),
@@ -89,9 +83,6 @@ describe("reliability — client crash + resume", () => {
 })
 
 describe("reliability — server restart recovery", () => {
-  // Per-case tempdir so the second `it` (whenever it lands) can't race
-  // on `stream.jsonl`. rmSync with force:true tolerates cleanup racing
-  // a lingering handle on slow CI.
   let tmpDir: string
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), "rxweave-reliability-"))
