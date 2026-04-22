@@ -344,35 +344,40 @@ function applyIncoming(
 // Batched apply for the initial drain — 500 events → 1 tldraw
 // `mergeRemoteChanges` transaction instead of 500, so listeners/
 // history/undo bookkeeping fires once per page. On a cold load that
-// collapses hundreds of separate transactions to a handful.
+// collapses hundreds of separate transactions to one per page.
 //
-// Per-record try/catch preserves the single-bad-row skip behavior: one
-// malformed record throws from `put`, we catch, drop the offender, and
-// reconstruct the surviving puts/removes in a retry. The retry itself
-// is still batched — the O(N) fallback only kicks in if another
-// malformed record surfaces, which in practice means a handful of
-// ancient rows on a development log.
+// Must iterate events IN ORDER and apply put/remove in original
+// sequence. Grouping all puts before all removes (or vice versa)
+// silently breaks `[delete A, upsert A]` semantics — common on
+// undo/redo — because the grouped form would apply the put and
+// then remove it.
+//
+// `put([record])` / `remove([id])` inside one `mergeRemoteChanges`
+// are cheap — they mutate tldraw's internal change set, which is
+// flushed once at transaction end. The saved cost was the per-event
+// transaction fanout, not the array-packing.
+//
+// Per-record try/catch fallback preserves the single-bad-row skip
+// behavior: if any record in the page fails tldraw validation the
+// whole transaction rolls back, and we re-apply each event through
+// `applyIncoming` (which skips offenders individually).
 function applyIncomingBatch(
   editor: Editor,
   events: ReadonlyArray<EventEnvelope>,
 ) {
   if (events.length === 0) return
-  const puts: Array<TLRecord> = []
-  const removes: Array<TLRecord["id"]> = []
-  for (const ev of events) {
-    const p = ev.payload as { record?: TLRecord; id?: string }
-    if (UPSERTED_TYPES.has(ev.type) && p.record) puts.push(p.record)
-    else if (DELETED_TYPES.has(ev.type) && p.id)
-      removes.push(p.id as TLRecord["id"])
-  }
   try {
     editor.store.mergeRemoteChanges(() => {
-      if (puts.length) editor.store.put(puts)
-      if (removes.length) editor.store.remove(removes)
+      for (const ev of events) {
+        const p = ev.payload as { record?: TLRecord; id?: string }
+        if (UPSERTED_TYPES.has(ev.type) && p.record) {
+          editor.store.put([p.record])
+        } else if (DELETED_TYPES.has(ev.type) && p.id) {
+          editor.store.remove([p.id as TLRecord["id"]])
+        }
+      }
     })
   } catch {
-    // Fall back to per-event so one bad row doesn't strand the whole
-    // page; each record still gets the applyIncoming try/catch skip.
     for (const ev of events) applyIncoming(editor, ev)
   }
 }
