@@ -21,8 +21,9 @@ import {
   registrySyncDiffHandler,
   registryPushHandler,
 } from "@rxweave/protocol"
+import { RXWEAVE_RPC_PATH, SESSION_TOKEN_PATH } from "@rxweave/protocol"
 import { verifyToken } from "./Auth.js"
-import { SESSION_TOKEN_PATH, sessionTokenRouteLayer } from "./SessionToken.js"
+import { sessionTokenRouteLayer } from "./SessionToken.js"
 import { Tenant } from "./Tenant.js"
 
 /**
@@ -183,7 +184,7 @@ export const startServer = (
     // `Layer.succeedContext(bunCtx)` reuses the same running instance
     // so subsequent layers don't spin up a second server.
     const rpcProtocolLive = RpcServer.layerProtocolHttp({
-      path: "/rxweave/rpc",
+      path: RXWEAVE_RPC_PATH,
     }).pipe(Layer.provide(RpcSerialization.layerNdjson))
     const handlersLive = rpcImpl.pipe(
       Layer.provide(opts.store),

@@ -1,12 +1,6 @@
 import { HttpRouter, HttpServerResponse } from "@effect/platform"
 import { Effect, Layer } from "effect"
-
-/**
- * The single path served by this module. Exported so the auth
- * middleware can do an EXACT-match bypass (no prefix/wildcard
- * shenanigans — tight guard).
- */
-export const SESSION_TOKEN_PATH = "/rxweave/session-token"
+import { SESSION_TOKEN_PATH } from "@rxweave/protocol"
 
 /**
  * Registers `GET /rxweave/session-token` on the ambient
