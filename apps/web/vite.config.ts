@@ -6,7 +6,11 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      "/api": "http://localhost:5301",
+      // Proxies both the RPC endpoint (`/rxweave/rpc`) and the
+      // session-token bootstrap (`/rxweave/session-token`) to the
+      // embedded server on :5301. Matches the path layout
+      // `@rxweave/server` installs on its Bun listener.
+      "/rxweave": "http://localhost:5301",
     },
   },
 })

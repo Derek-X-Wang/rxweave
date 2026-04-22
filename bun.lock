@@ -43,6 +43,8 @@
         "@rxweave/llm": "workspace:^",
         "@rxweave/runtime": "workspace:^",
         "@rxweave/schema": "workspace:^",
+        "@rxweave/server": "workspace:^",
+        "@rxweave/store-cloud": "workspace:^",
         "@rxweave/store-file": "workspace:^",
         "ai": "^5.0.0",
         "effect": "^3.21.0",

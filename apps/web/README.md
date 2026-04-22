@@ -12,28 +12,34 @@ bun run dev
 
 - **Web UI:** http://localhost:5173 (Vite dev server)
 - **Event log:** `.rxweave/canvas.jsonl` (JSONL, tail-able)
-- **HTTP API:**
-  - `POST /api/events` — `{ type, payload, actor?, source? }` → appends
-  - `GET /api/subscribe` — SSE stream, replays from earliest
+- **Auth token:** `.rxweave/serve.token` (POSIX 0600) — minted fresh on each server start
+- **HTTP surface** (provided by `@rxweave/server`):
+  - `GET /rxweave/session-token` — returns `{ token: string | null }` so same-origin browser code can bootstrap its bearer
+  - `POST /rxweave/rpc` — `@effect/rpc` over NDJSON, same shape cloud speaks (Append / Subscribe / GetById / Query / QueryAfter / RegistrySyncDiff / RegistryPush)
 
 ## Architecture
 
 ```
-Browser (tldraw)  ─user edits──▶  POST /api/events   ┐
-       ▲                                              ▼
-       │                                      @rxweave/store-file
-   SSE (replays everything)                           │
-       │                                              ▼
-       └──────────────────────────  /api/subscribe ──┘
-                                          │
-                                          ▼
-                               supervise([suggesterAgent])
+Browser (tldraw + @rxweave/store-cloud)
+        │                     ▲
+   Append(events)         Subscribe (NDJSON stream)
+        ▼                     │
+        └────────  /rxweave/rpc  ────────┐
+                                         │
+                              @rxweave/server
+                                         │
+                                         ▼
+                              @rxweave/store-file
+                                         │
+                                         ▼
+                        supervise([suggesterAgent])
+                  (shares the same EventStore instance)
 ```
 
-- tldraw's store changes marked `source: 'user'` → POST to the server.
-- Server appends to `FileStore`, echoes back via `subscribe`.
-- Browser applies echoed events via `mergeRemoteChanges`, marked `source: 'remote'` — outgoing listener ignores them. No sync loop.
-- tldraw records flow through the log verbatim — the bridge is record-agnostic.
+- tldraw store changes marked `source: 'user'` → `CloudStore.append` via the embedded RPC server.
+- Server hands the append to the single `FileStore` instance (shared with the suggester) and re-publishes through its `PubSub`; the subscriber on the other end of the same RPC connection sees it come back.
+- Browser applies echoed events via `mergeRemoteChanges`, which marks the store edits as `source: 'remote'` — outgoing listener ignores them. No sync loop.
+- tldraw records flow through the log verbatim; the bridge is record-agnostic.
 
 ## LLM suggester (opt-in)
 

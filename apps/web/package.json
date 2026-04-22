@@ -18,6 +18,8 @@
     "@rxweave/schema": "workspace:^",
     "@rxweave/core": "workspace:^",
     "@rxweave/runtime": "workspace:^",
+    "@rxweave/server": "workspace:^",
+    "@rxweave/store-cloud": "workspace:^",
     "@rxweave/store-file": "workspace:^",
     "@rxweave/llm": "workspace:^",
     "@ai-sdk/anthropic": "^2.0.0",
