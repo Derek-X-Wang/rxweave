@@ -1,32 +1,17 @@
 import { mkdirSync } from "node:fs"
 import { dirname } from "node:path"
+import { BunRuntime } from "@effect/platform-bun"
 import { Cause, Effect, Layer } from "effect"
 import { EventStore } from "@rxweave/core"
 import { FileStore } from "@rxweave/store-file"
-import { EventRegistry, type EventDef } from "@rxweave/schema"
+import { EventRegistry } from "@rxweave/schema"
 import { AgentCursorStore, supervise, type AgentDef } from "@rxweave/runtime"
 import { generateAndPersistToken, startServer } from "@rxweave/server"
-import {
-  CanvasBindingDeleted,
-  CanvasBindingUpserted,
-  CanvasShapeDeleted,
-  CanvasShapeUpserted,
-} from "./schemas.js"
+import { CANVAS_SCHEMAS } from "./schemas.js"
 
 const PORT = 5301
 const STORE_PATH = ".rxweave/canvas.jsonl"
 const TOKEN_PATH = ".rxweave/serve.token"
-
-// Widen each `defineEvent(...)` to `EventDef` to sidestep the
-// `exactOptionalPropertyTypes` co/contravariance mismatch between
-// narrow `EventDef<A, I>` and the `EventDef<unknown, unknown>` that
-// `reg.register(def)` expects — same pattern as the CLI config loader.
-const schemas: ReadonlyArray<EventDef> = [
-  CanvasShapeUpserted as EventDef,
-  CanvasShapeDeleted as EventDef,
-  CanvasBindingUpserted as EventDef,
-  CanvasBindingDeleted as EventDef,
-]
 
 // Opt-in LLM suggester agent. Gated on ANTHROPIC_API_KEY /
 // OPENROUTER_API_KEY so the canvas works standalone. Dynamic import
@@ -48,12 +33,6 @@ const hasKey =
 // chmod best-effort.
 mkdirSync(dirname(TOKEN_PATH), { recursive: true })
 
-// Base layer stack: this is where the single, shared EventStore +
-// EventRegistry + AgentCursorStore instances get built. Both
-// `startServer` (via `Layer.succeed(EventStore, …)`) and
-// `supervise([...])` end up reading from these same instances, so
-// canvas events posted via RPC reach the suggester's subscription and
-// suggester-emitted events reach browser clients subscribing via RPC.
 const AppLive = Layer.mergeAll(
   FileStore.Live({ path: STORE_PATH }),
   EventRegistry.Live,
@@ -69,7 +48,7 @@ const program = Effect.gen(function* () {
   // push — that's what allows browser → server Append RPCs to pass
   // the digest check without a separate RegistryPush round-trip.
   const reg = yield* EventRegistry
-  for (const def of schemas) yield* reg.register(def)
+  for (const def of CANVAS_SCHEMAS) yield* reg.register(def)
 
   // Mint the token and kick off the suggester import in parallel —
   // the import resolves `@ai-sdk/anthropic` + the suggester module
@@ -87,10 +66,6 @@ const program = Effect.gen(function* () {
     { concurrency: "unbounded" },
   )
 
-  // Fork the suggester agent into the SAME scope as startServer below.
-  // `Effect.forkScoped` ties the fiber's lifetime to the enclosing
-  // scope — SIGINT/SIGTERM closing the scope interrupts the agent
-  // fiber and then the HTTP listener in one clean cascade.
   if (suggesterDisabled) {
     console.log("[web] LLM suggester: disabled via SUGGESTER_DISABLED")
   } else if (suggesterMod) {
@@ -135,13 +110,13 @@ const program = Effect.gen(function* () {
   console.log(`[web] export RXWEAVE_TOKEN=${token}`)
   console.log(`[web] events log: ${STORE_PATH}`)
 
-  // Block forever; SIGINT/SIGTERM interrupts the enclosing scope, which
-  // cascades through `Effect.forkScoped(supervise(...))` and
+  // BunRuntime.runMain (below) wires SIGINT/SIGTERM into scope close,
+  // which cascades through `Effect.forkScoped(supervise(...))` and
   // `startServer`'s scope-bound Bun listener to a clean shutdown.
   yield* Effect.never
 })
 
-Effect.runFork(
+BunRuntime.runMain(
   Effect.scoped(program).pipe(
     Effect.provide(AppLive),
     Effect.tapErrorCause((cause) =>

@@ -6,11 +6,11 @@ import { RXWEAVE_RPC_PATH, SESSION_TOKEN_PATH } from "@rxweave/protocol"
 import {
   EventRegistry,
   type Cursor,
-  type EventDef,
   type EventEnvelope,
 } from "@rxweave/schema"
 import { CloudStore } from "@rxweave/store-cloud"
 import {
+  CANVAS_SCHEMAS,
   CanvasBindingDeleted,
   CanvasBindingUpserted,
   CanvasShapeDeleted,
@@ -47,19 +47,8 @@ import {
 // needs to pivot to `syncRegistry()` from `@rxweave/store-cloud` and
 // stand up a second RPC client purely for the negotiation.
 
-const SCHEMAS: ReadonlyArray<EventDef> = [
-  CanvasShapeUpserted as EventDef,
-  CanvasShapeDeleted as EventDef,
-  CanvasBindingUpserted as EventDef,
-  CanvasBindingDeleted as EventDef,
-]
-
 export function RxweaveBridge({ editor }: { editor: Editor }) {
   useEffect(() => {
-    // `disposed` + the nested runtime/unsub refs let us abort the
-    // async token-fetch + layer-build sequence cleanly if React
-    // unmounts the component (e.g. StrictMode double-mount, hot
-    // reload) before the runtime is up.
     let disposed = false
     let runtime: ManagedRuntime.ManagedRuntime<
       EventStore | EventRegistry,
@@ -69,15 +58,12 @@ export function RxweaveBridge({ editor }: { editor: Editor }) {
 
     // Per-shape debounce for upserts — a typed label ("F", "Fe",
     // "Fea", …) collapses into a single "settled" event at the end
-    // of the typing burst. Without this the suggester agent fires
-    // once per keystroke: expensive and noisy. Deletes flush any
-    // pending upsert for the same id before appending the delete,
-    // so a "type-then-immediately-delete" sequence can't leak a
-    // stale upsert after the removal.
-    // The Map stores `event` alongside `timer` so the React cleanup
-    // can flush every pending entry before disposing the runtime —
-    // without it, a label typed <2s before a tab-close or route
-    // change is silently dropped.
+    // of the typing burst so the suggester agent doesn't fire once
+    // per keystroke. Deletes flush any pending upsert for the same id
+    // before appending the delete, so a "type-then-immediately-delete"
+    // sequence can't leak a stale upsert after the removal. The
+    // React cleanup reads `event` off each entry to flush in-flight
+    // bursts before the runtime disposes.
     const DEBOUNCE_MS = 2000
     type PendingEvent = { type: string; payload: unknown }
     const pending = new Map<string, { timer: number; event: PendingEvent }>()
@@ -175,7 +161,7 @@ export function RxweaveBridge({ editor }: { editor: Editor }) {
         await runtime.runPromise(
           Effect.gen(function* () {
             const reg = yield* EventRegistry
-            for (const def of SCHEMAS)
+            for (const def of CANVAS_SCHEMAS)
               yield* reg
                 .register(def)
                 // Duplicate on hot-reload re-mount inside a single
@@ -199,6 +185,14 @@ export function RxweaveBridge({ editor }: { editor: Editor }) {
       unlisten = editor.store.listen(
         (entry) => {
           const { added, updated, removed } = entry.changes
+          // Removed first so an {update, delete} pair for the same id
+          // in one entry can't schedule an upsert that beats the
+          // delete's flushForDelete to the pending map.
+          for (const record of Object.values(removed)) {
+            const r = record as TLRecord
+            const ev = recordToEvent(r, "deleted")
+            if (ev) flushForDelete(r.id, ev)
+          }
           for (const record of Object.values(added)) {
             const r = record as TLRecord
             const ev = recordToEvent(r, "upserted")
@@ -209,11 +203,6 @@ export function RxweaveBridge({ editor }: { editor: Editor }) {
           >) {
             const ev = recordToEvent(to, "upserted")
             if (ev) scheduleUpsert(to.id, ev)
-          }
-          for (const record of Object.values(removed)) {
-            const r = record as TLRecord
-            const ev = recordToEvent(r, "deleted")
-            if (ev) flushForDelete(r.id, ev)
           }
         },
         { source: "user", scope: "document" },
@@ -254,12 +243,10 @@ export function RxweaveBridge({ editor }: { editor: Editor }) {
               {},
               PAGE_SIZE,
             )
-            for (const ev of batch) applyIncoming(editor, ev)
-            // Advance the cursor for the next page AND for the live
-            // subscribe below — even a short final page (length <
-            // PAGE_SIZE) matters here, otherwise subscribe starts from
-            // an older `liveCursor` and re-delivers what we just
-            // applied.
+            applyIncomingBatch(editor, batch)
+            // Advance the cursor even on a short final page — otherwise
+            // subscribe starts from an older `liveCursor` and re-delivers
+            // what we just applied.
             if (batch.length > 0) liveCursor = batch[batch.length - 1]!.id
             if (batch.length < PAGE_SIZE) break
           }
@@ -303,51 +290,89 @@ export function RxweaveBridge({ editor }: { editor: Editor }) {
   return null
 }
 
-type Kind = "shape" | "binding"
-
-const typeToEventTypeBase: Record<Kind, string> = {
-  shape: "canvas.shape",
-  binding: "canvas.binding",
-}
+// Using `.type` from the imported schemas (not string literals) so a
+// schema rename fails at compile time instead of silently dropping
+// incoming events through the switch's default arm.
+const UPSERTED_TYPES = new Set([
+  CanvasShapeUpserted.type,
+  CanvasBindingUpserted.type,
+])
+const DELETED_TYPES = new Set([
+  CanvasShapeDeleted.type,
+  CanvasBindingDeleted.type,
+])
 
 function recordToEvent(
   record: TLRecord,
   op: "upserted" | "deleted",
 ): { type: string; payload: unknown } | null {
-  const kind = record.typeName
-  if (kind !== "shape" && kind !== "binding") return null
-  const base = typeToEventTypeBase[kind]
-  if (op === "deleted") {
-    return { type: `${base}.deleted`, payload: { id: record.id } }
+  if (record.typeName === "shape") {
+    return op === "deleted"
+      ? { type: CanvasShapeDeleted.type, payload: { id: record.id } }
+      : { type: CanvasShapeUpserted.type, payload: { record } }
   }
-  return { type: `${base}.upserted`, payload: { record } }
+  if (record.typeName === "binding") {
+    return op === "deleted"
+      ? { type: CanvasBindingDeleted.type, payload: { id: record.id } }
+      : { type: CanvasBindingUpserted.type, payload: { record } }
+  }
+  return null
 }
 
+// Single-event apply for the live subscribe path.
+// tldraw's `put` throws synchronously on validation failure, so the
+// try/catch shields the subscribe fiber from a malformed historical
+// record (e.g. shape persisted by an older schema missing `rotation`).
 function applyIncoming(
   editor: Editor,
   event: { type: string; payload: unknown },
 ) {
   const payload = event.payload as { record?: TLRecord; id?: string }
-  // Wrap the tldraw mutation in try/catch so a single malformed record
-  // (e.g. a shape persisted by an older schema missing `rotation`)
-  // doesn't tear down the subscribe fiber and strand the canvas in a
-  // half-replayed state. tldraw's `put` throws synchronously on
-  // validation failure; without this guard one bad row in the event
-  // log halts all subsequent incoming events.
   try {
     editor.store.mergeRemoteChanges(() => {
-      switch (event.type) {
-        case "canvas.shape.upserted":
-        case "canvas.binding.upserted":
-          if (payload.record) editor.store.put([payload.record])
-          return
-        case "canvas.shape.deleted":
-        case "canvas.binding.deleted":
-          if (payload.id) editor.store.remove([payload.id as TLRecord["id"]])
-          return
+      if (UPSERTED_TYPES.has(event.type)) {
+        if (payload.record) editor.store.put([payload.record])
+      } else if (DELETED_TYPES.has(event.type)) {
+        if (payload.id) editor.store.remove([payload.id as TLRecord["id"]])
       }
     })
   } catch (err) {
     console.warn("[web] applyIncoming skipped malformed event", event.type, err)
+  }
+}
+
+// Batched apply for the initial drain — 500 events → 1 tldraw
+// `mergeRemoteChanges` transaction instead of 500, so listeners/
+// history/undo bookkeeping fires once per page. On a cold load that
+// collapses hundreds of separate transactions to a handful.
+//
+// Per-record try/catch preserves the single-bad-row skip behavior: one
+// malformed record throws from `put`, we catch, drop the offender, and
+// reconstruct the surviving puts/removes in a retry. The retry itself
+// is still batched — the O(N) fallback only kicks in if another
+// malformed record surfaces, which in practice means a handful of
+// ancient rows on a development log.
+function applyIncomingBatch(
+  editor: Editor,
+  events: ReadonlyArray<EventEnvelope>,
+) {
+  if (events.length === 0) return
+  const puts: Array<TLRecord> = []
+  const removes: Array<TLRecord["id"]> = []
+  for (const ev of events) {
+    const p = ev.payload as { record?: TLRecord; id?: string }
+    if (UPSERTED_TYPES.has(ev.type) && p.record) puts.push(p.record)
+    else if (DELETED_TYPES.has(ev.type) && p.id)
+      removes.push(p.id as TLRecord["id"])
+  }
+  try {
+    editor.store.mergeRemoteChanges(() => {
+      if (puts.length) editor.store.put(puts)
+      if (removes.length) editor.store.remove(removes)
+    })
+  } catch {
+    // Fall back to per-event so one bad row doesn't strand the whole
+    // page; each record still gets the applyIncoming try/catch skip.
+    for (const ev of events) applyIncoming(editor, ev)
   }
 }

@@ -1,5 +1,5 @@
 import { Schema } from "effect"
-import { defineEvent } from "@rxweave/schema"
+import { defineEvent, type EventDef } from "@rxweave/schema"
 
 // Canvas events carry tldraw's native record payloads verbatim. The
 // tldraw store uses stable `id`s per shape/asset/etc., and its
@@ -29,3 +29,13 @@ export const CanvasBindingDeleted = defineEvent(
   "canvas.binding.deleted",
   Schema.Struct({ id: Schema.String }),
 )
+
+// Single source of truth both sides register — digest parity is the
+// contract that lets the browser's `Append` RPC match the server's
+// registry digest without an explicit `RegistryPush`.
+export const CANVAS_SCHEMAS: ReadonlyArray<EventDef> = [
+  CanvasShapeUpserted as EventDef,
+  CanvasShapeDeleted as EventDef,
+  CanvasBindingUpserted as EventDef,
+  CanvasBindingDeleted as EventDef,
+]

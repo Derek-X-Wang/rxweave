@@ -15,23 +15,12 @@
  * No external deps — node:fs + node:zlib only.
  */
 
-import { readdirSync, readFileSync, statSync } from "node:fs"
+import { readdirSync, readFileSync } from "node:fs"
 import { gzipSync } from "node:zlib"
 import { extname, join, relative } from "node:path"
 
 const DIST = "./dist"
 const BUDGET_GZIP_KB = 200
-
-function walk(dir: string): Array<string> {
-  const out: Array<string> = []
-  for (const entry of readdirSync(dir)) {
-    const full = join(dir, entry)
-    const stat = statSync(full)
-    if (stat.isDirectory()) out.push(...walk(full))
-    else out.push(full)
-  }
-  return out
-}
 
 type Row = {
   readonly path: string
@@ -39,8 +28,9 @@ type Row = {
   readonly gz: number
 }
 
-const files = walk(DIST)
-const jsAndCss = files.filter((f) => [".js", ".css"].includes(extname(f)))
+const jsAndCss = readdirSync(DIST, { recursive: true, withFileTypes: true })
+  .filter((e) => e.isFile() && [".js", ".css"].includes(extname(e.name)))
+  .map((e) => join(e.parentPath, e.name))
 
 const rows: Array<Row> = []
 let totalRaw = 0
@@ -54,7 +44,6 @@ for (const f of jsAndCss) {
   rows.push({ path: relative(DIST, f), raw, gz })
 }
 
-// Sort largest-first so the main chunk leads the table.
 rows.sort((a, b) => b.gz - a.gz)
 
 const kb = (n: number) => (n / 1024).toFixed(1) + " KB"
