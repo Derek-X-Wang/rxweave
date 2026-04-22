@@ -17,30 +17,28 @@ import {
 import { initCommand } from "../src/commands/init.js"
 import { devCommand } from "../src/commands/dev.js"
 import { emitCommand } from "../src/commands/emit.js"
+import { importCommand } from "../src/commands/import.js"
+import { serveCommand } from "../src/commands/serve.js"
 import { streamCommand } from "../src/commands/stream.js"
 import { getCommand } from "../src/commands/get.js"
 import { inspectCommand } from "../src/commands/inspect.js"
-import { countCommand } from "../src/commands/count.js"
-import { lastCommand } from "../src/commands/last.js"
-import { headCommand } from "../src/commands/head.js"
+import { cursorCommand } from "../src/commands/cursor.js"
 import { schemaCommand } from "../src/commands/schema.js"
 import { agentCommand } from "../src/commands/agent.js"
-import { storeCommand } from "../src/commands/store.js"
 
 const root = rootCommand.pipe(
   Command.withSubcommands([
     initCommand,
     devCommand,
     emitCommand,
+    importCommand,
+    serveCommand,
     streamCommand,
     getCommand,
     inspectCommand,
-    countCommand,
-    lastCommand,
-    headCommand,
+    cursorCommand,
     schemaCommand,
     agentCommand,
-    storeCommand,
   ]),
 )
 

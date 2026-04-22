@@ -6,6 +6,11 @@ export const exitCodeFor = (tag: string): number => {
       return 2
     case "SchemaValidation":
     case "DuplicateEventType":
+    // Bad CLI arguments share the schema-invalid category — the user
+    // gave us something structurally wrong.
+    case "InvalidStreamOptions":
+    case "UnknownFold":
+    case "UnsafeServerConfig":
       return 3
     case "AppendError":
     case "SubscribeError":
@@ -43,6 +48,11 @@ export const toErrorPayload = (error: unknown): ErrorPayload => {
       if (typeof json._tag !== "string") return { ...json, _tag: "UnknownError" }
       return json as ErrorPayload
     }
+    // Plain object with a string `_tag` — use it directly. Lets CLI
+    // command handlers `Effect.fail({_tag, ...})` without constructing
+    // a full Schema.TaggedError class for single-site arg-shape errors.
+    const asRecord = error as Record<string, unknown>
+    if (typeof asRecord._tag === "string") return asRecord as ErrorPayload
     const plain: Record<string, unknown> = {}
     if (error instanceof Error && typeof error.message === "string") {
       plain.message = error.message

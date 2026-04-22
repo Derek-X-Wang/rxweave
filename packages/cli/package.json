@@ -58,6 +58,7 @@
     "@rxweave/core": "workspace:^",
     "@rxweave/reactive": "workspace:^",
     "@rxweave/runtime": "workspace:^",
+    "@rxweave/server": "workspace:^",
     "@rxweave/store-memory": "workspace:^",
     "@rxweave/store-file": "workspace:^"
   },
