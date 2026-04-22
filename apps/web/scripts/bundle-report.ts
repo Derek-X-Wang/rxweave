@@ -7,11 +7,10 @@
  * what a browser pulls over a gzip-enabled CDN).
  *
  * Budget (spec §11): `apps/web`'s production bundle must not grow by more
- * than 200 KB gzipped due to the `@rxweave/store-cloud` adoption landed in
- * Task 22. We don't yet have a captured pre-Phase-F baseline, so this
- * script is currently a reporting tool rather than a CI gate — the first
- * measurement recorded in the git log serves as the Phase F baseline and
- * future growth is measured against it.
+ * than 200 KB gzipped due to `@rxweave/store-cloud` adoption. The first
+ * measurement recorded in the git log serves as the baseline and future
+ * growth is measured against it — this script is currently a reporting
+ * tool rather than a CI gate.
  *
  * No external deps — node:fs + node:zlib only.
  */

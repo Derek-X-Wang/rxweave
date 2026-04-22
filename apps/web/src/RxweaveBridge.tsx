@@ -1,8 +1,14 @@
 import { useEffect } from "react"
-import { Effect, Layer, ManagedRuntime, Stream } from "effect"
+import { Cause, Effect, Layer, ManagedRuntime, Stream } from "effect"
 import type { Editor, TLRecord } from "tldraw"
 import { EventStore } from "@rxweave/core"
-import { EventRegistry, type EventDef } from "@rxweave/schema"
+import { RXWEAVE_RPC_PATH, SESSION_TOKEN_PATH } from "@rxweave/protocol"
+import {
+  EventRegistry,
+  type Cursor,
+  type EventDef,
+  type EventEnvelope,
+} from "@rxweave/schema"
 import { CloudStore } from "@rxweave/store-cloud"
 import {
   CanvasBindingDeleted,
@@ -68,10 +74,15 @@ export function RxweaveBridge({ editor }: { editor: Editor }) {
     // pending upsert for the same id before appending the delete,
     // so a "type-then-immediately-delete" sequence can't leak a
     // stale upsert after the removal.
+    // The Map stores `event` alongside `timer` so the React cleanup
+    // can flush every pending entry before disposing the runtime —
+    // without it, a label typed <2s before a tab-close or route
+    // change is silently dropped.
     const DEBOUNCE_MS = 2000
-    const pending = new Map<string, number>()
+    type PendingEvent = { type: string; payload: unknown }
+    const pending = new Map<string, { timer: number; event: PendingEvent }>()
 
-    const appendEvent = (event: { type: string; payload: unknown }) => {
+    const appendEvent = (event: PendingEvent) => {
       if (!runtime) return
       // `actor: "human"` is the suggester's `actor !== "human"` gate;
       // if we drop this the server defaults actor to `"system"` and
@@ -79,42 +90,38 @@ export function RxweaveBridge({ editor }: { editor: Editor }) {
       // branded `Schema.pattern`-validated string; `as never` opts
       // out of the brand at the call site (matches the upstream
       // pattern in `@rxweave/store-file`'s Live).
-      runtime.runPromise(
-        Effect.gen(function* () {
-          const store = yield* EventStore
-          yield* store.append([
-            {
-              type: event.type,
-              actor: "human" as never,
-              source: "canvas" as never,
-              payload: event.payload,
-            },
-          ])
-        }),
-      ).catch((err) => {
-        console.warn("[web] append failed", err)
-      })
+      runtime
+        .runPromise(
+          Effect.gen(function* () {
+            const store = yield* EventStore
+            yield* store.append([
+              {
+                type: event.type,
+                actor: "human" as never,
+                source: "canvas" as never,
+                payload: event.payload,
+              },
+            ])
+          }),
+        )
+        .catch((err) => {
+          console.warn("[web] append failed", err)
+        })
     }
 
-    const scheduleUpsert = (
-      id: string,
-      event: { type: string; payload: unknown },
-    ) => {
+    const scheduleUpsert = (id: string, event: PendingEvent) => {
       const existing = pending.get(id)
-      if (existing !== undefined) clearTimeout(existing)
+      if (existing !== undefined) clearTimeout(existing.timer)
       const timer = window.setTimeout(() => {
         pending.delete(id)
         appendEvent(event)
       }, DEBOUNCE_MS)
-      pending.set(id, timer)
+      pending.set(id, { timer, event })
     }
 
-    const flushForDelete = (
-      id: string,
-      event: { type: string; payload: unknown },
-    ) => {
+    const flushForDelete = (id: string, event: PendingEvent) => {
       const existing = pending.get(id)
-      if (existing !== undefined) clearTimeout(existing)
+      if (existing !== undefined) clearTimeout(existing.timer)
       pending.delete(id)
       appendEvent(event)
     }
@@ -126,12 +133,12 @@ export function RxweaveBridge({ editor }: { editor: Editor }) {
     ;(async () => {
       let token: string | null = null
       try {
-        const res = await fetch("/rxweave/session-token")
+        const res = await fetch(SESSION_TOKEN_PATH)
         const body = (await res.json()) as { token: string | null }
         token = body.token
       } catch (err) {
         console.warn(
-          "[web] /rxweave/session-token fetch failed; proceeding tokenless",
+          `[web] ${SESSION_TOKEN_PATH} fetch failed; proceeding tokenless`,
           err,
         )
       }
@@ -146,25 +153,20 @@ export function RxweaveBridge({ editor }: { editor: Editor }) {
       // zero remaining requirements, which is what `ManagedRuntime.make`
       // needs. `Layer.merge` would have kept `EventRegistry` in the
       // requirement channel.
+      //
+      // `url` must include the exact RPC mount path: `@effect/rpc`'s
+      // `layerProtocolHttp` POSTs to EXACTLY the URL passed, with no
+      // implicit append. Drifting silently routes to vite's 404 and
+      // the RPC client hangs pending forever — `RXWEAVE_RPC_PATH` is
+      // exported from `@rxweave/server` specifically to keep the two
+      // ends coupled. `token === null` ⇒ server is in no-auth mode;
+      // omit the `token` provider entirely so CloudStore's auth
+      // wiring skips the Authorization header (spec §3.3).
       const layer = CloudStore.Live({
-        url: window.location.origin,
-        // `token === null` ⇒ server is in no-auth mode; omit the
-        // provider entirely so CloudStore's Auth wiring skips the
-        // Authorization header (spec §3.3). `token` non-null ⇒
-        // wrap in a nullary closure so each request resolves the
-        // current value (still captured-once here, but the shape
-        // matches the rotating-credentials contract).
-        ...(token === null ? {} : { token: () => token as string }),
+        url: `${window.location.origin}${RXWEAVE_RPC_PATH}/`,
+        ...(token === null ? {} : { token: () => token }),
       }).pipe(Layer.provideMerge(EventRegistry.Live))
       runtime = ManagedRuntime.make(layer)
-      if (disposed) {
-        // Possible race: user unmounted while we were building the
-        // layer. Eagerly dispose so the layer's acquire-side (RPC
-        // protocol scope) releases.
-        await runtime.dispose()
-        runtime = null
-        return
-      }
 
       // Local registry registration — mirrors server-side startup so
       // `client.Append`'s digest calc matches the server's. See the
@@ -186,6 +188,10 @@ export function RxweaveBridge({ editor }: { editor: Editor }) {
         console.warn("[web] registry setup failed", err)
         return
       }
+      // After the last await above: if cleanup fired during registration
+      // we'd otherwise attach a listener + fork subscribe on a disposed
+      // runtime.
+      if (disposed) return
 
       // Outgoing: tldraw store changes → CloudStore.append. Scoped to
       // `source: 'user'` so the remote-applied incoming events don't
@@ -213,23 +219,58 @@ export function RxweaveBridge({ editor }: { editor: Editor }) {
         { source: "user", scope: "document" },
       )
 
-      // Incoming: server subscribe stream → tldraw.mergeRemoteChanges.
-      // Fork into the managed runtime so its fiber is tied to the
-      // runtime's scope and `runtime.dispose()` tears it down.
+      // Incoming: two-phase (drain-then-subscribe) instead of a single
+      // `subscribe({ cursor: "earliest" })` stream.
+      //
+      // Why two-phase: WebKit's `fetch` streaming reader buffers
+      // aggressively — after a large replay burst flushes, subsequent
+      // trickle events (one shape-upsert every few seconds) never reach
+      // the reader because the internal buffer never fills enough to
+      // trigger another flush. Bun, Node's fetch, and Chrome-family
+      // browsers don't exhibit this; Safari/WebKit/cmux-WKWebView does.
+      //
+      // Sidestep: paginated `queryAfter` draws the history via ordinary
+      // request-response HTTP (no long-lived stream, no WebKit buffer
+      // trap), then open a fresh subscribe stream from the last-drained
+      // cursor — its replay side is empty, so the stream starts
+      // delivering live events immediately and no reply-burst/flush
+      // race exists.
+      //
+      // No gap: `queryAfter(cursor, ...)` is cursor-exclusive and
+      // `subscribe({ cursor })` is also cursor-exclusive, so an event
+      // appended between the last page and the subscribe opening is
+      // either in the next page (if we query again) or delivered by
+      // subscribe (if it landed after our snapshot) — never both, never
+      // missed. We pin `liveCursor` to the latest drained id before
+      // opening subscribe.
+      const PAGE_SIZE = 500
       runtime.runFork(
         Effect.gen(function* () {
           const store = yield* EventStore
+          let liveCursor: Cursor = "earliest"
+          while (true) {
+            const batch: ReadonlyArray<EventEnvelope> = yield* store.queryAfter(
+              liveCursor,
+              {},
+              PAGE_SIZE,
+            )
+            for (const ev of batch) applyIncoming(editor, ev)
+            // Advance the cursor for the next page AND for the live
+            // subscribe below — even a short final page (length <
+            // PAGE_SIZE) matters here, otherwise subscribe starts from
+            // an older `liveCursor` and re-delivers what we just
+            // applied.
+            if (batch.length > 0) liveCursor = batch[batch.length - 1]!.id
+            if (batch.length < PAGE_SIZE) break
+          }
           yield* Stream.runForEach(
-            store.subscribe({ cursor: "earliest" }),
+            store.subscribe({ cursor: liveCursor }),
             (event) => Effect.sync(() => applyIncoming(editor, event)),
           )
         }).pipe(
           Effect.tapErrorCause((cause) =>
             Effect.sync(() =>
-              console.warn(
-                "[web] subscribe cause:",
-                (cause as { toString?: () => string }).toString?.() ?? cause,
-              ),
+              console.warn("[web] subscribe cause:\n" + Cause.pretty(cause)),
             ),
           ),
         ),
@@ -238,9 +279,20 @@ export function RxweaveBridge({ editor }: { editor: Editor }) {
 
     return () => {
       disposed = true
-      for (const timer of pending.values()) clearTimeout(timer)
-      pending.clear()
+      // Stop the outgoing listener first so no new upserts queue while
+      // we flush. The flush below fires the most recent event per id
+      // (matches `scheduleUpsert`'s "coalesce to last state" contract),
+      // which hands the append to the runtime before we dispose it —
+      // the append fibers race with dispose but in practice the POST
+      // bytes reach Bun before the scope tears down. This is best-
+      // effort by design; a full at-least-once story would need
+      // `navigator.sendBeacon` against a beacon endpoint.
       if (unlisten) unlisten()
+      for (const { timer, event } of pending.values()) {
+        clearTimeout(timer)
+        appendEvent(event)
+      }
+      pending.clear()
       // `dispose()` is async but React's cleanup is sync — we fire
       // and forget; the runtime's scope close is idempotent and any
       // in-flight `runPromise`/`runFork` is interrupted.
@@ -276,16 +328,26 @@ function applyIncoming(
   event: { type: string; payload: unknown },
 ) {
   const payload = event.payload as { record?: TLRecord; id?: string }
-  editor.store.mergeRemoteChanges(() => {
-    switch (event.type) {
-      case "canvas.shape.upserted":
-      case "canvas.binding.upserted":
-        if (payload.record) editor.store.put([payload.record])
-        return
-      case "canvas.shape.deleted":
-      case "canvas.binding.deleted":
-        if (payload.id) editor.store.remove([payload.id as TLRecord["id"]])
-        return
-    }
-  })
+  // Wrap the tldraw mutation in try/catch so a single malformed record
+  // (e.g. a shape persisted by an older schema missing `rotation`)
+  // doesn't tear down the subscribe fiber and strand the canvas in a
+  // half-replayed state. tldraw's `put` throws synchronously on
+  // validation failure; without this guard one bad row in the event
+  // log halts all subsequent incoming events.
+  try {
+    editor.store.mergeRemoteChanges(() => {
+      switch (event.type) {
+        case "canvas.shape.upserted":
+        case "canvas.binding.upserted":
+          if (payload.record) editor.store.put([payload.record])
+          return
+        case "canvas.shape.deleted":
+        case "canvas.binding.deleted":
+          if (payload.id) editor.store.remove([payload.id as TLRecord["id"]])
+          return
+      }
+    })
+  } catch (err) {
+    console.warn("[web] applyIncoming skipped malformed event", event.type, err)
+  }
 }

@@ -1,6 +1,6 @@
 import { mkdirSync } from "node:fs"
 import { dirname } from "node:path"
-import { Effect, Layer } from "effect"
+import { Cause, Effect, Layer } from "effect"
 import { EventStore } from "@rxweave/core"
 import { FileStore } from "@rxweave/store-file"
 import { EventRegistry, type EventDef } from "@rxweave/schema"
@@ -71,10 +71,21 @@ const program = Effect.gen(function* () {
   const reg = yield* EventRegistry
   for (const def of schemas) yield* reg.register(def)
 
-  // Mint + persist the ephemeral bearer token. `generateAndPersistToken`
-  // writes to disk with 0600 perms; the browser can read it via the
-  // server's `/rxweave/session-token` endpoint (spec §3.3).
-  const token = yield* generateAndPersistToken({ tokenFile: TOKEN_PATH })
+  // Mint the token and kick off the suggester import in parallel —
+  // the import resolves `@ai-sdk/anthropic` + the suggester module
+  // from disk (~100-300ms cold) and has no dependency on the token,
+  // so pushing it off the critical path brings the HTTP listener up
+  // proportionally sooner when keys are present.
+  const shouldLoadSuggester = !suggesterDisabled && hasKey
+  const [token, suggesterMod] = yield* Effect.all(
+    [
+      generateAndPersistToken({ tokenFile: TOKEN_PATH }),
+      shouldLoadSuggester
+        ? Effect.promise(() => import("./agents/suggester.js"))
+        : Effect.succeed(null),
+    ],
+    { concurrency: "unbounded" },
+  )
 
   // Fork the suggester agent into the SAME scope as startServer below.
   // `Effect.forkScoped` ties the fiber's lifetime to the enclosing
@@ -82,18 +93,13 @@ const program = Effect.gen(function* () {
   // fiber and then the HTTP listener in one clean cascade.
   if (suggesterDisabled) {
     console.log("[web] LLM suggester: disabled via SUGGESTER_DISABLED")
-  } else if (hasKey) {
-    const { suggesterAgent } = yield* Effect.promise(
-      () => import("./agents/suggester.js"),
-    )
+  } else if (suggesterMod) {
+    const { suggesterAgent } = suggesterMod
     yield* Effect.forkScoped(
       supervise([suggesterAgent as unknown as AgentDef<any>]).pipe(
         Effect.tapErrorCause((cause) =>
           Effect.sync(() =>
-            console.error(
-              "[web] supervise: DIED",
-              (cause as { toString?: () => string }).toString?.() ?? cause,
-            ),
+            console.error("[web] supervise: DIED\n" + Cause.pretty(cause)),
           ),
         ),
       ),
@@ -139,12 +145,7 @@ Effect.runFork(
   Effect.scoped(program).pipe(
     Effect.provide(AppLive),
     Effect.tapErrorCause((cause) =>
-      Effect.sync(() =>
-        console.error(
-          "[web] fatal:",
-          (cause as { toString?: () => string }).toString?.() ?? cause,
-        ),
-      ),
+      Effect.sync(() => console.error("[web] fatal:\n" + Cause.pretty(cause))),
     ),
   ) as Effect.Effect<never, unknown, never>,
 )

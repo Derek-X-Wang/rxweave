@@ -18,6 +18,7 @@
     "react-dom": "^19.2.0",
     "tldraw": "^4.5.0",
     "@rxweave/schema": "workspace:^",
+    "@rxweave/protocol": "workspace:^",
     "@rxweave/core": "workspace:^",
     "@rxweave/runtime": "workspace:^",
     "@rxweave/server": "workspace:^",
