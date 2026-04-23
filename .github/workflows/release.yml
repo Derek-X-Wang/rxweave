@@ -30,14 +30,26 @@ jobs:
           registry-url: "https://registry.npmjs.org"
 
       # Trusted Publishing requires npm >= 11.5.1. Node 22 bundles
-      # 10.9.2. `npm install -g npm@latest` breaks mid-self-replace
-      # (`promise-retry` MODULE_NOT_FOUND) even with --force; corepack
-      # sidesteps this by managing the shim separately from the
-      # running npm.
-      - name: Activate npm >= 11.5.1 via corepack
+      # 10.9.2 at the toolcache location. Prior attempts:
+      #   1. `npm install -g npm@latest` — MODULE_NOT_FOUND
+      #      'promise-retry' mid-self-replace, even with --force.
+      #   2. `corepack prepare npm@11.5.1 --activate` — logs
+      #      "Preparing..." but `which npm` still resolves to the
+      #      toolcache 10.9.2; corepack's shim at /usr/local/bin
+      #      loses the PATH lookup to setup-node's hostedtoolcache.
+      # Working approach: install to a fresh user prefix so npm
+      # 10.9.2 writes 11.5.1 into a NEW dir (no self-replace, no
+      # promise-retry ghost), then prepend that dir via
+      # $GITHUB_PATH so subsequent steps resolve npm → 11.5.1.
+      - name: Install npm >= 11.5.1 (user-prefix to avoid self-replace)
         run: |
-          corepack enable
-          corepack prepare npm@11.5.1 --activate
+          npm config set prefix "$HOME/.npm-global"
+          npm install -g npm@11.5.1
+          echo "$HOME/.npm-global/bin" >> "$GITHUB_PATH"
+
+      - name: Verify npm version
+        run: |
+          which npm
           npm --version
 
       - name: Install dependencies
