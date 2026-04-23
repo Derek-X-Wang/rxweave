@@ -1,6 +1,6 @@
 {
   "name": "@rxweave/runtime",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Agent runtime for RxWeave — defineAgent, supervise, cursor persistence, dedupe.",
   "keywords": [
     "effect",

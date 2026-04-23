@@ -1,6 +1,6 @@
 {
   "name": "@rxweave/server",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Local HTTP event-stream server for RxWeave — hosts @rxweave/protocol RpcGroup over NDJSON. Embed in apps or run standalone via `rxweave serve`.",
   "keywords": ["effect", "event-sourcing", "rxweave", "server", "rpc"],
   "license": "MIT",

@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.4.1
+
+Publish-pipeline fix. No code changes — same behaviour as v0.4.0, but actually installable from npm.
+
+- **Fixed `workspace:^` references shipping verbatim into published packages.** `bunx changeset publish` enters each package dir and runs `npm publish` there; npm's built-in workspace-protocol conversion only kicks in when publishing from the workspace root with `-w <pkg>`, so from a sub-package dir the `workspace:^` strings round-tripped unchanged into the tarball. Every published `@rxweave/*` from v0.3.0 onwards was broken on `bun add` / `npm install` with `workspace:^ failed to resolve`. Added a pre-publish step that rewrites `"workspace:^"` to `"^<version>"` across every `packages/*/package.json` and fails loudly if any reference slips through.
+- **Effect on consumers:** `bun add @rxweave/cli@0.4.1` now resolves cleanly. `@rxweave/cli@0.4.0`, `0.3.0`, `0.2.0`, `0.1.0` are deprecated via `npm deprecate` with a pointer at `0.4.1+`.
+
 ## v0.4.0
 
 CLI + unified stream server release. Ships the local counterpart to RxWeave Cloud: the same `@effect/rpc` protocol over NDJSON, just bound to `127.0.0.1` instead of a hosted URL. Agents speak one protocol regardless of where the stream lives.
