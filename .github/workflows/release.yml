@@ -61,9 +61,39 @@ jobs:
       - name: Test
         run: bun run test
 
+      # Rewrite `"workspace:^"` to `"^<version>"` in every
+      # packages/*/package.json BEFORE publishing.
+      #
+      # `bunx changeset publish` enters each package dir and runs
+      # `npm publish` there; npm's built-in workspace-protocol
+      # conversion only kicks in when publishing from the workspace
+      # root with `-w <pkg>`, so from inside a sub-package dir the
+      # `workspace:^` strings round-trip unchanged into the tarball.
+      # Consumers then fail on `bun add @rxweave/cli` because
+      # `workspace:^` has no meaning outside a workspace. This bug
+      # shipped undetected from v0.3.0 through v0.4.0; every
+      # downstream install was broken. Fix: pre-rewrite the refs so
+      # the published package.json carries real caret ranges.
+      #
+      # Monorepo is version-locked — all @rxweave/* packages always
+      # share one version — so a single substitution is safe.
+      - name: Rewrite workspace:^ to actual version
+        run: |
+          VERSION=$(node -p "require('./packages/cli/package.json').version")
+          echo "Rewriting workspace:^ → ^$VERSION across packages/*/package.json"
+          for f in packages/*/package.json; do
+            sed -i 's/"workspace:\^"/"^'"$VERSION"'"/g' "$f"
+          done
+          # Fail loudly if any workspace:^ slipped through.
+          if grep -l '"workspace:\^"' packages/*/package.json; then
+            echo "::error::workspace:^ references remain after rewrite" >&2
+            exit 1
+          fi
+          echo "--- dependency ranges after rewrite ---"
+          grep -E '"@rxweave/' packages/cli/package.json || true
+
       # Changesets publishes any package whose package.json version
-      # isn't already on npm, in dependency order, converting
-      # workspace:^ → ^x.y.z along the way. No args / envs needed —
-      # the npm CLI picks up the OIDC token automatically.
+      # isn't already on npm, in dependency order. No args / envs
+      # needed — the npm CLI picks up the OIDC token automatically.
       - name: Publish
         run: bunx changeset publish
