@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.4.0
+
+CLI + unified stream server release. Ships the local counterpart to RxWeave Cloud: the same `@effect/rpc` protocol over NDJSON, just bound to `127.0.0.1` instead of a hosted URL. Agents speak one protocol regardless of where the stream lives.
+
+- **New package `@rxweave/server`** — embeddable local HTTP event-stream server. Hosts `@rxweave/protocol`'s RpcGroup over NDJSON on Bun, mints an ephemeral `rxk_<hex>` bearer token per boot (persisted to `.rxweave/serve.token` at 0600), exposes a `/rxweave/session-token` loopback endpoint so browser code can bootstrap without shipping the token in the bundle. Hardens `--host 0.0.0.0 --no-auth` as a CLI-layer interlock (refuses to bind).
+- **Shared handlers in `@rxweave/protocol`** — `packages/protocol/src/handlers/` now exports `appendHandler`, `subscribeHandler`, `getByIdHandler`, `queryHandler`, `queryAfterHandler`, `registrySyncDiffHandler`, `registryPushHandler`. Cloud and local servers call the same code; conformance harness runs against both.
+- **`@rxweave/store-cloud` token optional** — browser-on-localhost embedded path works without a bearer header.
+- **`@rxweave/schema` ActorId validation** — regex `/^[a-zA-Z0-9_.-]+(:[a-zA-Z0-9_.-]+)?$/` enforced at `decodeUnknown`, with structured `{_tag: "InvalidActorId", reason}` errors on failure.
+- **CLI additions:**
+  - `rxweave serve` — bind the local HTTP RPC server.
+  - `rxweave import <file>` — bulk-load events from NDJSON / JSON array, `--dry-run` for validation-only.
+  - `rxweave cursor` — print current head cursor (empty string when store is empty).
+  - `rxweave stream --count` — print match count and exit.
+  - `rxweave stream --last N` — print the last N matches.
+  - `rxweave stream --fold <name>` — print the projected state from a named fold; ships with `canvas` built in, custom folds loaded from config.
+- **CLI renames:** `agent run` → `agent exec`. The old name continues to work this release; `run` is removed in v0.5.
+- **CLI drops:** top-level `count`, `last`, `head`, `store` commands — subsumed by `stream` flags.
+- **`apps/canvas` → `apps/web`** — the canvas demo now embeds `@rxweave/server` + the browser bridge runs `@rxweave/store-cloud` over NDJSON RPC. Same wire as cloud, same conformance gate. Bundle: 658.9 KB gzip (within spec §11's 200 KB growth budget).
+- **Cookbooks** — `docs/cookbook/cursor-recovery.md` (resume agents from a saved cursor) and `docs/cookbook/backup-restore.md` (local stream file round-trip).
+- **Reliability gates** — spec §11 tests in `packages/server/test/`: client-crash + resume (strict cursor-exclusive semantics; no gaps, no dupes) and server-restart recovery (FileStore round-trip across a process boundary). Plus an HTTP subscribe replay→live regression test that fills a gap the conformance harness skipped.
+- **WebKit fetch-buffer workaround** — the `apps/web` bridge uses a two-phase drain (paginated `queryAfter` for history, then `subscribe` from the last-drained cursor) because Safari/WebKit's `fetch` reader buffers aggressively after a replay burst. Bun, Node, and Chrome-family browsers aren't affected; the workaround is isolated to the app. Sustained cross-tab live sync in WebKit still needs a server-side NDJSON heartbeat — deferred.
+
 ## v0.3.0
 
 First public npm release. All packages published at `0.3.0` under the `@rxweave` scope.
