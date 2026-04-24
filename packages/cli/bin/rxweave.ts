@@ -25,6 +25,9 @@ import { inspectCommand } from "../src/commands/inspect.js"
 import { cursorCommand } from "../src/commands/cursor.js"
 import { schemaCommand } from "../src/commands/schema.js"
 import { agentCommand } from "../src/commands/agent.js"
+// Inlined at build time by `bun build` so `rxweave --version` tracks
+// the published package version instead of a hand-edited constant.
+import pkg from "../package.json"
 
 const root = rootCommand.pipe(
   Command.withSubcommands([
@@ -42,7 +45,7 @@ const root = rootCommand.pipe(
   ]),
 )
 
-const cli = Command.run(root, { name: "rxweave", version: "0.1.0" })
+const cli = Command.run(root, { name: "rxweave", version: pkg.version })
 
 const configPath = readConfigPathFromArgv(process.argv) ?? DEFAULT_CONFIG_PATH
 const metaPath = isMetaInvocation(process.argv)
