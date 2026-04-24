@@ -97,3 +97,41 @@ jobs:
       # needed — the npm CLI picks up the OIDC token automatically.
       - name: Publish
         run: bunx changeset publish
+
+      # Post-publish smoke test: install the freshly-published CLI
+      # from npm into an empty directory and exercise its entry +
+      # one subcommand. Catches the regressions that bit v0.3.0 – v0.4.0:
+      #   • `workspace:^` refs leaking into the tarball (bun add fails)
+      #   • tarball missing files (bunx rxweave fails to load)
+      #   • broken bin shebang / inlined JSON imports
+      # None of these surface in the in-repo test suite because in a
+      # workspace `workspace:^` resolves fine; they only appear from a
+      # consumer's perspective. Run it here so a broken release fails
+      # the workflow instead of being discovered by a user's `bun add`.
+      - name: Smoke-test published CLI
+        run: |
+          set -euo pipefail
+          VERSION=$(node -p "require('./packages/cli/package.json').version")
+          echo "Smoke-testing @rxweave/cli@$VERSION from a fresh directory"
+          TMPDIR=$(mktemp -d)
+          cd "$TMPDIR"
+          printf '{"name":"rxweave-smoke","private":true}\n' > package.json
+          # npm registry propagation can lag a few seconds after
+          # `changeset publish` returns. Retry before declaring failure.
+          for i in 1 2 3 4 5; do
+            if bun add "@rxweave/cli@$VERSION"; then
+              break
+            fi
+            if [ "$i" = "5" ]; then
+              echo "::error::bun add @rxweave/cli@$VERSION failed after 5 attempts"
+              exit 1
+            fi
+            echo "attempt $i failed, retrying in 10s..."
+            sleep 10
+          done
+          ACTUAL=$(bunx rxweave --version)
+          if [ "$ACTUAL" != "$VERSION" ]; then
+            echo "::error::rxweave --version returned '$ACTUAL'; expected '$VERSION'"
+            exit 1
+          fi
+          bunx rxweave serve --help > /dev/null
