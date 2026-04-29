@@ -17,8 +17,10 @@ const makeHeartbeatStream = (
   intervalMs: number,
 ): Stream.Stream<Heartbeat, never, never> =>
   Stream.repeatEffectWithSchedule(
-    Effect.sync(
-      (): Heartbeat => ({ _tag: "Heartbeat", at: Date.now() }),
+    Effect.clockWith((clock) =>
+      clock.currentTimeMillis.pipe(
+        Effect.map((at): Heartbeat => ({ _tag: "Heartbeat", at })),
+      ),
     ),
     Schedule.spaced(Duration.millis(intervalMs)),
   )
@@ -70,11 +72,7 @@ export const subscribeHandler = (args: {
       }
 
       const intervalMs = clampInterval(args.heartbeat.intervalMs)
-      const heartbeats = makeHeartbeatStream(intervalMs) as Stream.Stream<
-        EventEnvelope | Heartbeat,
-        SubscribeWireError,
-        never
-      >
+      const heartbeats = makeHeartbeatStream(intervalMs)
       return Stream.merge(envelopes, heartbeats)
     }),
   )
