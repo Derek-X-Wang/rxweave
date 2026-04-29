@@ -1,6 +1,7 @@
 import { Effect, Stream } from "effect"
 import { EventStore } from "@rxweave/core"
 import type { Cursor, EventEnvelope, Filter } from "@rxweave/schema"
+import { Heartbeat } from "../RxWeaveRpc.js"
 import { SubscribeWireError } from "../Errors.js"
 
 /**
@@ -10,21 +11,26 @@ import { SubscribeWireError } from "../Errors.js"
  * semantics + filter pushdown the store implements flow through
  * unchanged. The Convex-backed Subscribe handler in
  * `cloud/packages/backend/convex/rxweaveRpc.ts` is a polling-loop
- * specialisation that predates the `EventStore.subscribe` stream
- * primitive; both map their source error channel to
+ * specialisation; both map their source error channel to
  * `SubscribeWireError.reason`.
  *
- * NOTE: `SubscribeWireError` carries an optional `lagged` flag as part
- * of the wire contract (the cloud retry policy in
- * `@rxweave/store-cloud` reads it to decide whether to reconnect). Core
- * `SubscribeError` has no such field today, so nothing to pass through
- * — the wire-level `lagged` channel stays reserved for future store
- * implementations that signal lagged subscribers explicitly.
+ * When `heartbeat` is set, the handler merges a periodic Heartbeat
+ * sentinel into the envelope stream via Stream.merge. The merged
+ * heartbeat fiber is scoped together with the envelope subscription,
+ * so disconnecting the subscriber tears down both sides.
+ *
+ * Backpressure note: HTTP transport in @effect/rpc has supportsAck:
+ * false (node_modules/@effect/rpc/src/RpcServer.ts:1076), so a slow
+ * browser reader doesn't apply backpressure to the heartbeat fiber.
+ * Heartbeats accumulate at the requested cadence regardless of client
+ * drain rate. This is intentional — the heartbeat's job is to keep
+ * emitting *to* the client, not to be paced *by* the client.
  */
 export const subscribeHandler = (args: {
   readonly cursor: Cursor
   readonly filter?: Filter
-}): Stream.Stream<EventEnvelope, SubscribeWireError, EventStore> =>
+  readonly heartbeat?: { readonly intervalMs: number }
+}): Stream.Stream<EventEnvelope | Heartbeat, SubscribeWireError, EventStore> =>
   Stream.unwrapScoped(
     Effect.gen(function* () {
       const store = yield* EventStore

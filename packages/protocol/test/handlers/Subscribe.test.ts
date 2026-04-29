@@ -24,3 +24,25 @@ describe("subscribeHandler", () => {
     }).pipe(Effect.provide(MemoryStore.Live)),
   )
 })
+
+describe("subscribeHandler — heartbeat undefined (backwards-compat)", () => {
+  it.scoped("emits no Heartbeat items when heartbeat arg is omitted", () =>
+    Effect.gen(function* () {
+      const store = yield* EventStore
+      yield* store.append([
+        { type: "demo.ping", actor: "tester", source: "cli", payload: {} },
+        { type: "demo.pong", actor: "tester", source: "cli", payload: {} },
+      ])
+
+      const stream = subscribeHandler({ cursor: "earliest" })
+      const collected = yield* Stream.runCollect(stream.pipe(Stream.take(2)))
+      const items = Chunk.toReadonlyArray(collected)
+
+      expect(items.length).toBe(2)
+      for (const item of items) {
+        expect((item as { _tag?: string })._tag).not.toBe("Heartbeat")
+        expect((item as { id?: string }).id).toBeDefined()
+      }
+    }).pipe(Effect.provide(MemoryStore.Live)),
+  )
+})
