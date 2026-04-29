@@ -16,6 +16,19 @@ import {
   SubscribeWireError,
 } from "./Errors.js"
 
+/**
+ * `Heartbeat` — server-emitted liveness sentinel on the `Subscribe` stream.
+ *
+ * Carries only `at` (server unix-ms). Used by browser clients (WebKit
+ * fetch-buffer flush) and as a generic liveness signal. v0.6 may extend
+ * this struct additively (e.g., `serverCursor`); the `_tag` discriminator
+ * keeps that change non-breaking.
+ */
+export const Heartbeat = Schema.TaggedStruct("Heartbeat", {
+  at: Schema.Number,
+})
+export type Heartbeat = Schema.Schema.Type<typeof Heartbeat>
+
 export class RxWeaveRpc extends RpcGroup.make(
   Rpc.make("Append", {
     payload: Schema.Struct({
@@ -29,8 +42,9 @@ export class RxWeaveRpc extends RpcGroup.make(
     payload: Schema.Struct({
       cursor: Cursor,
       filter: Schema.optional(Filter),
+      heartbeat: Schema.optional(Schema.Struct({ intervalMs: Schema.Number })),
     }),
-    success: EventEnvelope,
+    success: Schema.Union(Heartbeat, EventEnvelope),
     stream: true,
     error: SubscribeWireError,
   }),
