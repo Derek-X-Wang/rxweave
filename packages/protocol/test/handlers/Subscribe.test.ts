@@ -106,3 +106,47 @@ describe("subscribeHandler — heartbeat injection", () => {
     }).pipe(Effect.provide(MemoryStore.Live)),
   )
 })
+
+describe("subscribeHandler — intervalMs clamping", () => {
+  const cases: ReadonlyArray<{ input: number; effective: number }> = [
+    { input: 0, effective: 1000 },
+    { input: -100, effective: 1000 },
+    { input: 999, effective: 1000 },
+    { input: 1000, effective: 1000 },
+    { input: 30_000, effective: 30_000 },
+    { input: 300_000, effective: 300_000 },
+    { input: 300_001, effective: 300_000 },
+    { input: Number.NaN, effective: 1000 },
+  ]
+
+  for (const { input, effective } of cases) {
+    it.scoped(
+      `intervalMs ${input} → effective ${effective}`,
+      () =>
+        Effect.gen(function* () {
+          const stream = subscribeHandler({
+            cursor: "earliest",
+            heartbeat: { intervalMs: input },
+          })
+
+          const fiber = yield* Effect.fork(
+            Stream.runCollect(
+              stream.pipe(
+                Stream.filter((item) => (item as { _tag?: string })._tag === "Heartbeat"),
+                Stream.take(2),
+              ),
+            ),
+          )
+          // Advance just under effective interval — second heartbeat must NOT have arrived.
+          yield* TestClock.adjust(`${effective - 1} millis`)
+          // Advance the remaining 2ms (cross the threshold).
+          yield* TestClock.adjust("2 millis")
+          const exit = yield* Fiber.await(fiber)
+          const items = Chunk.toReadonlyArray(
+            (exit as { _tag: "Success"; value: Chunk.Chunk<unknown> }).value,
+          )
+          expect(items.length).toBe(2)
+        }).pipe(Effect.provide(MemoryStore.Live)),
+    )
+  }
+})
