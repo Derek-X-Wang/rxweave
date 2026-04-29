@@ -139,6 +139,12 @@ describe("subscribeHandler — intervalMs clamping", () => {
           )
           // Advance just under effective interval — second heartbeat must NOT have arrived.
           yield* TestClock.adjust(`${effective - 1} millis`)
+          // Second heartbeat must NOT have arrived yet — guards against
+          // clampInterval being silently bypassed (e.g. input 999 would deliver
+          // at 999ms unclamped vs 1000ms clamped, but Stream.take(2) without
+          // this poll cannot distinguish them).
+          const partial = yield* Fiber.poll(fiber)
+          expect(partial._tag).toBe("None")
           // Advance the remaining 2ms (cross the threshold).
           yield* TestClock.adjust("2 millis")
           const exit = yield* Fiber.await(fiber)
