@@ -34,4 +34,20 @@ describe("RxWeaveRpc.Subscribe success", () => {
     })
     expect((decoded as { _tag: string })._tag).toBe("Heartbeat")
   })
+
+  test("Subscribe.success still decodes an EventEnvelope", () => {
+    const subscribeRpc = RxWeaveRpc.requests.get("Subscribe") as {
+      successSchema: { success: Schema.Schema<unknown, unknown> }
+    }
+    const successSchema = subscribeRpc.successSchema.success
+    const decoded = Schema.decodeUnknownSync(successSchema)({
+      id: "01HX0000000000000000000000",
+      type: "item.created",
+      actor: "user:1",
+      source: "canvas",
+      timestamp: 1700000000000,
+      payload: {},
+    })
+    expect((decoded as { type: string }).type).toBe("item.created")
+  })
 })

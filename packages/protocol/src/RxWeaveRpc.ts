@@ -29,6 +29,17 @@ export const Heartbeat = Schema.TaggedStruct("Heartbeat", {
 })
 export type Heartbeat = Schema.Schema.Type<typeof Heartbeat>
 
+/**
+ * Configuration for the opt-in heartbeat sentinel on the `Subscribe`
+ * stream. Clients pass this in the request payload to ask the server
+ * to inject `Heartbeat` items at the requested cadence.
+ *
+ * `intervalMs` is clamped server-side to [1000, 300000]; out-of-range
+ * values are silently clamped, not rejected.
+ */
+export const HeartbeatConfig = Schema.Struct({ intervalMs: Schema.Number })
+export type HeartbeatConfig = Schema.Schema.Type<typeof HeartbeatConfig>
+
 export class RxWeaveRpc extends RpcGroup.make(
   Rpc.make("Append", {
     payload: Schema.Struct({
@@ -42,7 +53,7 @@ export class RxWeaveRpc extends RpcGroup.make(
     payload: Schema.Struct({
       cursor: Cursor,
       filter: Schema.optional(Filter),
-      heartbeat: Schema.optional(Schema.Struct({ intervalMs: Schema.Number })),
+      heartbeat: Schema.optional(HeartbeatConfig),
     }),
     success: Schema.Union(Heartbeat, EventEnvelope),
     stream: true,
