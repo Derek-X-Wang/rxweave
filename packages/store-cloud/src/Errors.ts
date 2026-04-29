@@ -1,4 +1,4 @@
-import { Data } from "effect"
+import { Schema } from "effect"
 
 /**
  * Surfaced when the heartbeat-driven liveness watchdog observes
@@ -11,6 +11,7 @@ import { Data } from "effect"
  * heartbeat field never arm the watchdog, so this error never
  * fires against them.
  */
-export class WatchdogTimeout extends Data.TaggedError("WatchdogTimeout")<{
-  readonly idleMs: number
-}> {}
+export class WatchdogTimeout extends Schema.TaggedError<WatchdogTimeout>()(
+  "WatchdogTimeout",
+  { idleMs: Schema.Number },
+) {}

@@ -202,23 +202,18 @@ new field drop it via Schema.Struct's unknown-key semantics."
 **Files:**
 - Modify: `packages/store-cloud/src/Errors.ts` (add new error class)
 - Modify: `packages/store-cloud/src/Retry.ts`
-- Test: `packages/store-cloud/test/Retry.test.ts` (extend existing if present, otherwise new file)
+- Test: `packages/store-cloud/test/CloudStore.unit.test.ts` (extend the existing `isRetryable` classifier table)
 
 - [ ] **Step 1: Write the failing test**
 
-```typescript
-// packages/store-cloud/test/Retry.test.ts (or extend existing)
-import { describe, expect, test } from "vitest"
-import { isRetryable } from "../src/Retry.js"
-import { WatchdogTimeout } from "../src/Errors.js"
+Extend the existing `isRetryable classifier matches the documented heuristic` test in `packages/store-cloud/test/CloudStore.unit.test.ts` by adding a `WatchdogTimeout` row to the classifier table — do NOT create a new `Retry.test.ts`. The table already covers `RpcClientError`, `SubscribeWireError` variants, `NotFoundWireError`, `RegistryWireError`, HTTP status codes, and edge cases. Add one line:
 
-describe("isRetryable", () => {
-  test("WatchdogTimeout is retryable", () => {
-    const err = new WatchdogTimeout({ idleMs: 45_000 })
-    expect(isRetryable(err)).toBe(true)
-  })
-})
+```typescript
+// In the existing "isRetryable classifier matches the documented heuristic" it.effect block:
+expect(isRetryable({ _tag: "WatchdogTimeout", idleMs: 45_000 })).toBe(true)
 ```
+
+Place it after the `RegistryWireError` line and before the `status: 401` line, consistent with the ordering (wire errors, then HTTP codes, then edge cases).
 
 - [ ] **Step 2: Run the test to verify it fails**
 
@@ -229,7 +224,7 @@ Expected: FAIL — `WatchdogTimeout` not exported from `Errors.js`, or `isRetrya
 
 ```typescript
 // packages/store-cloud/src/Errors.ts (add to existing file; if file doesn't exist, create it)
-import { Data } from "effect"
+import { Schema } from "effect"
 
 /**
  * Surfaced when the heartbeat-driven liveness watchdog observes
@@ -242,9 +237,10 @@ import { Data } from "effect"
  * heartbeat field never arm the watchdog, so this error never
  * fires against them.
  */
-export class WatchdogTimeout extends Data.TaggedError("WatchdogTimeout")<{
-  readonly idleMs: number
-}> {}
+export class WatchdogTimeout extends Schema.TaggedError<WatchdogTimeout>()(
+  "WatchdogTimeout",
+  { idleMs: Schema.Number },
+) {}
 ```
 
 If `Errors.ts` doesn't already exist in `packages/store-cloud/src/`, also export the class via `packages/store-cloud/src/index.ts`. Check first; if it does exist, just add the class.
@@ -274,7 +270,7 @@ Expected: PASS — `WatchdogTimeout` retryable test green; existing Retry tests 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add packages/store-cloud/src/Errors.ts packages/store-cloud/src/Retry.ts packages/store-cloud/test/Retry.test.ts
+git add packages/store-cloud/src/Errors.ts packages/store-cloud/src/Retry.ts packages/store-cloud/test/CloudStore.unit.test.ts
 git commit -m "feat(store-cloud): WatchdogTimeout error, classified retryable
 
 Adds the error variant the heartbeat watchdog raises when no
@@ -1491,7 +1487,7 @@ Expected: FAIL — `sessionTokenFetch` not exported from `Auth.ts`.
 
 ```typescript
 // packages/store-cloud/src/Auth.ts (extend existing file)
-import { Data, Effect } from "effect"
+import { Schema, Effect } from "effect"
 import { HttpClient, HttpClientRequest } from "@effect/platform"
 
 // (existing TokenProvider, cachedToken, resolveToken, withBearerToken,
@@ -1502,9 +1498,10 @@ import { HttpClient, HttpClientRequest } from "@effect/platform"
  * after a fresh token fetch. Terminal — the application must
  * re-bootstrap (e.g., reload the page).
  */
-export class AuthFailed extends Data.TaggedError("AuthFailed")<{
-  readonly cause: string
-}> {}
+export class AuthFailed extends Schema.TaggedError<AuthFailed>()(
+  "AuthFailed",
+  { cause: Schema.String },
+) {}
 
 /**
  * Browser auth strategy: bootstrap a bearer token via fetch to a
@@ -1576,7 +1573,7 @@ Notes for the implementing engineer:
 
 - The exact `HttpClient.make` factory signature (positional `f` callback vs. an object with `execute`) varies across `@effect/platform` minor versions. If `HttpClient.make((req) => ...)` doesn't compile, switch to `HttpClient.make({ execute: (req) => ... })` per the version you have installed; the body is the same.
 - The `as HttpClient.HttpClient.With<E, R>` cast bridges the strict-typed `HttpClient.HttpClient` returned by `HttpClient.make` and the parameterized `With<E, R>` shape consumed by `RpcClient.layerProtocolHttp`'s `transformClient`. If your installed `@effect/platform` exports a parameterized `make`, drop the cast.
-- `AuthFailed` extends `Data.TaggedError("AuthFailed")` — same shape as `WatchdogTimeout` from Task 2 (and matches the existing tagged-error idiom across the repo).
+- `AuthFailed` extends `Schema.TaggedError<AuthFailed>()("AuthFailed", { cause: Schema.String })` — same pattern as `WatchdogTimeout` from Task 2 and all other tagged errors in the repo (`packages/{core,protocol,schema}/src/Errors.ts` all use `Schema.TaggedError`, which produces `toJSON()`-capable instances the CLI's error-reporting path relies on).
 
 - [ ] **Step 4: Run the tests to verify they pass**
 

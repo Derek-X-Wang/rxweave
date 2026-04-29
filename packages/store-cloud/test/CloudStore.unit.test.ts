@@ -398,6 +398,7 @@ describe("CloudStore (unit)", () => {
       expect(isRetryable({ _tag: "SubscribeWireError", reason: "invalid-cursor" })).toBe(false)
       expect(isRetryable({ _tag: "NotFoundWireError", id: "x" })).toBe(false)
       expect(isRetryable({ _tag: "RegistryWireError", reason: "foo" })).toBe(false)
+      expect(isRetryable({ _tag: "WatchdogTimeout", idleMs: 45_000 })).toBe(true)
       expect(isRetryable({ status: 401 })).toBe(false)
       expect(isRetryable({ status: 503 })).toBe(true)
       expect(isRetryable({})).toBe(false)
