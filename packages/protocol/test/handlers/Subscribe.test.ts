@@ -1,6 +1,6 @@
 import { describe, expect } from "vitest"
 import { it } from "@effect/vitest"
-import { Chunk, Effect, Stream } from "effect"
+import { Chunk, Effect, Exit, Fiber, Stream, TestClock } from "effect"
 import { EventStore } from "@rxweave/core"
 import { MemoryStore } from "@rxweave/store-memory"
 import { subscribeHandler } from "../../src/handlers/Subscribe.js"
@@ -43,6 +43,66 @@ describe("subscribeHandler — heartbeat undefined (backwards-compat)", () => {
         expect((item as { _tag?: string })._tag).not.toBe("Heartbeat")
         expect((item as { id?: string }).id).toBeDefined()
       }
+    }).pipe(Effect.provide(MemoryStore.Live)),
+  )
+})
+
+describe("subscribeHandler — heartbeat injection", () => {
+  it.scoped("emits one heartbeat immediately on subscribe-open", () =>
+    Effect.gen(function* () {
+      const stream = subscribeHandler({
+        cursor: "earliest",
+        heartbeat: { intervalMs: 1000 },
+      })
+      const first = yield* Stream.runHead(stream).pipe(Effect.timeout("100 millis"))
+      expect(first._tag).toBe("Some")
+      expect((first as { value: { _tag: string } }).value._tag).toBe("Heartbeat")
+    }).pipe(Effect.provide(MemoryStore.Live)),
+  )
+
+  it.scoped("emits N+1 heartbeats over N intervals after the first", () =>
+    Effect.gen(function* () {
+      const stream = subscribeHandler({
+        cursor: "earliest",
+        heartbeat: { intervalMs: 1000 },
+      })
+
+      const fiber = yield* Effect.fork(
+        Stream.runCollect(
+          stream.pipe(
+            Stream.filter((item) => (item as { _tag?: string })._tag === "Heartbeat"),
+            Stream.take(4),
+          ),
+        ),
+      )
+      yield* TestClock.adjust("3500 millis")
+      const exit = yield* Fiber.await(fiber)
+      const items = Chunk.toReadonlyArray(
+        (exit as Exit.Exit<Chunk.Chunk<unknown>, unknown> & { _tag: "Success"; value: Chunk.Chunk<unknown> }).value,
+      )
+      expect(items.length).toBe(4)
+    }).pipe(Effect.provide(MemoryStore.Live)),
+  )
+
+  it.scoped("does NOT double-emit at t=0 (regression for Stream.concat mistake)", () =>
+    Effect.gen(function* () {
+      const stream = subscribeHandler({
+        cursor: "earliest",
+        heartbeat: { intervalMs: 1000 },
+      })
+      const fiber = yield* Effect.fork(
+        Stream.runCollect(
+          stream.pipe(
+            Stream.filter((item) => (item as { _tag?: string })._tag === "Heartbeat"),
+            Stream.take(2),
+          ).pipe(Effect.timeout("500 millis")),
+        ),
+      )
+      // advance TestClock past the 500ms timeout but not to the 1000ms mark
+      // so the second heartbeat never fires and the timeout returns Left
+      yield* TestClock.adjust("600 millis")
+      const exit = yield* Fiber.await(fiber)
+      expect(exit._tag).toBe("Failure")
     }).pipe(Effect.provide(MemoryStore.Live)),
   )
 })

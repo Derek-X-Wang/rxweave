@@ -1,8 +1,27 @@
-import { Effect, Stream } from "effect"
+import { Duration, Effect, Schedule, Stream } from "effect"
 import { EventStore } from "@rxweave/core"
 import type { Cursor, EventEnvelope, Filter } from "@rxweave/schema"
-import { Heartbeat } from "../RxWeaveRpc.js"
+import { Heartbeat, type HeartbeatConfig } from "../RxWeaveRpc.js"
 import { SubscribeWireError } from "../Errors.js"
+
+const MIN_INTERVAL_MS = 1000
+const MAX_INTERVAL_MS = 300_000
+
+const clampInterval = (ms: number): number => {
+  if (!Number.isFinite(ms) || ms < MIN_INTERVAL_MS) return MIN_INTERVAL_MS
+  if (ms > MAX_INTERVAL_MS) return MAX_INTERVAL_MS
+  return ms
+}
+
+const makeHeartbeatStream = (
+  intervalMs: number,
+): Stream.Stream<Heartbeat, never, never> =>
+  Stream.repeatEffectWithSchedule(
+    Effect.sync(
+      (): Heartbeat => ({ _tag: "Heartbeat", at: Date.now() }),
+    ),
+    Schedule.spaced(Duration.millis(intervalMs)),
+  )
 
 /**
  * Pure-Effect subscribe handler shared by Cloud and `@rxweave/server`.
@@ -20,21 +39,21 @@ import { SubscribeWireError } from "../Errors.js"
  * so disconnecting the subscriber tears down both sides.
  *
  * Backpressure note: HTTP transport in @effect/rpc has supportsAck:
- * false (node_modules/@effect/rpc/src/RpcServer.ts:1076), so a slow
- * browser reader doesn't apply backpressure to the heartbeat fiber.
- * Heartbeats accumulate at the requested cadence regardless of client
- * drain rate. This is intentional — the heartbeat's job is to keep
- * emitting *to* the client, not to be paced *by* the client.
+ * false, so a slow browser reader doesn't apply backpressure to the
+ * heartbeat fiber. Heartbeats accumulate at the requested cadence
+ * regardless of client drain rate. This is intentional — the
+ * heartbeat's job is to keep emitting *to* the client, not to be
+ * paced *by* the client.
  */
 export const subscribeHandler = (args: {
   readonly cursor: Cursor
   readonly filter?: Filter
-  readonly heartbeat?: { readonly intervalMs: number }
+  readonly heartbeat?: HeartbeatConfig
 }): Stream.Stream<EventEnvelope | Heartbeat, SubscribeWireError, EventStore> =>
   Stream.unwrapScoped(
     Effect.gen(function* () {
       const store = yield* EventStore
-      return store
+      const envelopes = store
         .subscribe(
           args.filter === undefined
             ? { cursor: args.cursor }
@@ -45,5 +64,17 @@ export const subscribeHandler = (args: {
             (e) => new SubscribeWireError({ reason: e.reason }),
           ),
         )
+
+      if (args.heartbeat === undefined) {
+        return envelopes as Stream.Stream<EventEnvelope | Heartbeat, SubscribeWireError, never>
+      }
+
+      const intervalMs = clampInterval(args.heartbeat.intervalMs)
+      const heartbeats = makeHeartbeatStream(intervalMs) as Stream.Stream<
+        EventEnvelope | Heartbeat,
+        SubscribeWireError,
+        never
+      >
+      return Stream.merge(envelopes, heartbeats)
     }),
   )
