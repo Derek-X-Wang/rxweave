@@ -25,6 +25,9 @@ const TRANSIENT_TAGS = new Set<string>([
   // Transport-layer error surfaced by @effect/rpc when the HTTP
   // request itself fails (DNS, connection reset, timeout, 5xx).
   "RpcClientError",
+  // Watchdog timeout from makeLive's heartbeat liveness check —
+  // reconnect from the last-delivered cursor.
+  "WatchdogTimeout",
 ])
 
 const PERMANENT_TAGS = new Set<string>([
