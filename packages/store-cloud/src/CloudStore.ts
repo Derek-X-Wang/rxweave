@@ -307,11 +307,10 @@ export const makeCloudEventStore = (
                   client
                     .QueryAfter({
                       cursor: currentCursor,
-                      filter: filter ?? { types: undefined, actors: undefined, sources: undefined },
+                      filter: filter ?? {},
                       limit: 1024,
                     })
                     .pipe(
-                      Effect.orDie,
                       Effect.map((page) => {
                         if (page.length === 0)
                           return Option.none<readonly [Chunk.Chunk<EventEnvelope>, Cursor]>()
@@ -321,6 +320,19 @@ export const makeCloudEventStore = (
                     ),
               ).pipe(
                 Stream.tap((e: EventEnvelope) => Ref.set(lastDelivered, e.id)),
+                // Retry transient errors during drain — same policy as
+                // subscribeStream. Raw error is kept during retry so
+                // isRetryable can classify RpcClientError as transient;
+                // SubscribeError mapping happens at the boundary after
+                // the retry budget exhausts (or succeeds), matching the
+                // subscribeStream pattern exactly.
+                Stream.retry(
+                  Schedule.exponential(Duration.millis(500), 1.5).pipe(
+                    Schedule.intersect(Schedule.recurs(10)),
+                    Schedule.whileInput(isRetryable),
+                  ),
+                ),
+                Stream.mapError(() => new SubscribeError({ reason: "cloud-drain" })),
               )
 
             return Stream.concat(drainStream, subscribeStream)
@@ -444,11 +456,9 @@ export const CloudStore = {
       url: opts.url,
       transformClient,
       ...(opts.heartbeat !== undefined ? { heartbeat: opts.heartbeat } : {}),
-      // drainBeforeSubscribe is omitted here; Task 13 will wire it
-      // through to makeCloudEventStore. Once wired, CLI/Node consumers
-      // will keep it at false because they have no fetch-buffer
-      // pathology and Subscribe handles replay; LiveFromBrowser
-      // (Task 14) will set it to true.
+      // drainBeforeSubscribe is intentionally omitted here — CLI/Node
+      // consumers have no fetch-buffer pathology and Subscribe handles
+      // replay. LiveFromBrowser (Task 14) sets the flag to true.
     })
   },
 }
