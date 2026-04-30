@@ -145,7 +145,7 @@ export const makeCloudEventStore = (
         // position. Pre-v0.5 the Ref was layer-global; that contract
         // was never observable because no caller relied on cross-
         // subscribe sharing.
-        Stream.unwrap(
+        Stream.unwrapScoped(
           Effect.gen(function* () {
             // Tracks the last event id delivered by this subscriber.
             // Used by the reconnect path so `connect` resumes exclusive
