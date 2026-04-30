@@ -396,8 +396,11 @@ export const CloudStore = {
       url: opts.url,
       transformClient,
       ...(opts.heartbeat !== undefined ? { heartbeat: opts.heartbeat } : {}),
-      // drainBeforeSubscribe defaults to false for CLI/Node — they have
-      // no fetch-buffer pathology and Subscribe handles replay.
+      // drainBeforeSubscribe is omitted here; Task 13 will wire it
+      // through to makeCloudEventStore. Once wired, CLI/Node consumers
+      // will keep it at false because they have no fetch-buffer
+      // pathology and Subscribe handles replay; LiveFromBrowser
+      // (Task 14) will set it to true.
     })
   },
 }
