@@ -40,6 +40,7 @@ import {
   Option,
   Ref,
   Schedule,
+  Schema,
   Stream,
 } from "effect"
 import { FetchHttpClient, type HttpClient } from "@effect/platform"
@@ -53,7 +54,7 @@ import {
   QueryError,
   SubscribeError,
 } from "@rxweave/core"
-import { RxWeaveRpc } from "@rxweave/protocol"
+import { Heartbeat, RxWeaveRpc } from "@rxweave/protocol"
 
 import {
   cachedToken,
@@ -62,6 +63,12 @@ import {
   withRefreshOn401,
 } from "./Auth.js"
 import { isRetryable } from "./Retry.js"
+
+/**
+ * Created once at module scope — `Schema.is` returns a closure and
+ * constructing it per-call would be wasteful.
+ */
+const isHeartbeat = Schema.is(Heartbeat)
 
 export interface CloudStoreOpts {
   /** Base URL of the cloud's `/rxweave/rpc` endpoint. */
@@ -178,8 +185,12 @@ export const makeCloudEventStore = (
                   //     (and will arm the watchdog above); consumers of EventStore
                   //     should only see EventEnvelopes.
                   Stream.filterMap((item) => {
-                    const tag = (item as { _tag?: string })._tag
-                    if (tag === "Heartbeat") return Option.none()
+                    if (isHeartbeat(item)) return Option.none()
+                    // Cast remains because TS does not narrow
+                    // Heartbeat | EventEnvelope through a fresh-variable
+                    // predicate; the union exhaustiveness is enforced by
+                    // the Subscribe success schema, not by structural
+                    // inference here.
                     return Option.some(item as EventEnvelope)
                   }),
                   // (3) Cursor tap runs AFTER the filter so it only sees envelopes
