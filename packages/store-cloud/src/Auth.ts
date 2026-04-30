@@ -168,7 +168,17 @@ export { AuthFailed } from "./Errors.js"
  * Browser auth strategy: bootstrap a bearer token via fetch to a
  * server-provided endpoint (typically `/rxweave/session-token`),
  * cache it (TTL via cachedToken), and on 401 invalidate-AND-retry the
- * failed request once. After a second 401, propagate AuthFailed.
+ * failed request once. After a second 401, the request fails with an
+ * AuthFailed *defect* — caught at the application boundary via
+ * `Effect.catchAllDefect` or surfaced as an unhandled error via the
+ * runtime's defect handler.
+ *
+ * Using `Effect.die` (defect) rather than `Effect.fail` (typed error)
+ * keeps the return type as `HttpClient.With<E, R>` — same error channel
+ * as the input — satisfying `RpcClient.layerProtocolHttp`'s
+ * `transformClient` constraint `<E, R>(c) => HttpClient.With<E, R>`.
+ * AuthFailed is still a `Schema.TaggedError`, so its typed structure is
+ * preserved through the Cause for callers that use `catchAllDefect`.
  *
  * Composition relies on `withBearerToken(cached)` to attach the header
  * via mapRequestEffect — that wrapper re-resolves the cache on every
@@ -188,7 +198,7 @@ export const sessionTokenFetch = (opts: {
 }): {
   readonly transformClient: <E, R>(
     c: HttpClient.HttpClient.With<E, R>,
-  ) => HttpClient.HttpClient.With<E | AuthFailed, R>
+  ) => HttpClient.HttpClient.With<E, R>
 } => {
   const tokenUrl = `${opts.origin}${opts.tokenPath}`
 
@@ -204,7 +214,7 @@ export const sessionTokenFetch = (opts: {
   return {
     transformClient: <E, R>(
       client: HttpClient.HttpClient.With<E, R>,
-    ): HttpClient.HttpClient.With<E | AuthFailed, R> => {
+    ): HttpClient.HttpClient.With<E, R> => {
       const withAuth = withBearerToken(cached)(client)
       // HttpClient.transform wraps the client's execute: it receives
       // (firstEffect, request) where firstEffect is the Effect that
@@ -219,14 +229,14 @@ export const sessionTokenFetch = (opts: {
             cached.invalidate()
             return Effect.flatMap(withAuth.execute(request), (second) => {
               if (second.status === 401) {
-                return Effect.fail(
+                return Effect.die(
                   new AuthFailed({ cause: "401 after token refresh" }),
                 )
               }
               return Effect.succeed(second)
             })
           }),
-      ) as HttpClient.HttpClient.With<E | AuthFailed, R>
+      )
     },
   }
 }
