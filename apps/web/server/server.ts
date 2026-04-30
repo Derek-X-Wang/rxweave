@@ -5,7 +5,7 @@ import { FileStore } from "@rxweave/store-file"
 import { EventRegistry } from "@rxweave/schema"
 import { AgentCursorStore, supervise, type AgentDef } from "@rxweave/runtime"
 import { generateAndPersistToken, startServer } from "@rxweave/server"
-import { CANVAS_SCHEMAS } from "./schemas.js"
+import { CANVAS_SCHEMAS } from "../src/shared/schemas.js"
 
 const PORT = 5301
 const STORE_PATH = ".rxweave/canvas.jsonl"

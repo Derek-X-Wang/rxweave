@@ -10,7 +10,7 @@ import {
   CanvasBindingUpserted,
   CanvasShapeDeleted,
   CanvasShapeUpserted,
-} from "../server/schemas.js"
+} from "./shared/schemas.js"
 
 // Bidirectional adapter between tldraw's store and RxWeave's event log.
 //
