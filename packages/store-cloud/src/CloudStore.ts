@@ -60,6 +60,7 @@ import { Heartbeat, type HeartbeatConfig, RxWeaveRpc } from "@rxweave/protocol"
 
 import {
   cachedToken,
+  sessionTokenFetch,
   type TokenProvider,
   withBearerToken,
   withRefreshOn401,
@@ -418,6 +419,34 @@ const makeLive = (config: {
   return Layer.scoped(EventStore, StoreEffect).pipe(Layer.provide(ProtocolLayer))
 }
 
+const DEFAULT_TOKEN_PATH = "/rxweave/session-token"
+const DEFAULT_BROWSER_HEARTBEAT: HeartbeatConfig = { intervalMs: 15_000 }
+
+/**
+ * Options for `CloudStore.LiveFromBrowser`.
+ *
+ * Unlike `CloudStoreOpts` (which takes a pre-formed `url` and an optional
+ * token provider), `LiveFromBrowserOpts` takes an `origin` and derives both
+ * the RPC URL (`${origin}/rxweave/rpc/`) and the session-token bootstrap URL
+ * (`${origin}${tokenPath}`) internally. This is the browser-facing shape —
+ * the auth strategy (session-token fetch with 401-retry) and drain mode are
+ * baked in; callers only tune the origin, token path, and heartbeat interval.
+ */
+export interface LiveFromBrowserOpts {
+  /** Base origin, e.g. `"https://app.rxweave.io"`. No trailing slash. */
+  readonly origin: string
+  /**
+   * Server-relative path to the session-token endpoint.
+   * @default "/rxweave/session-token"
+   */
+  readonly tokenPath?: string
+  /**
+   * Heartbeat configuration forwarded to the Subscribe watchdog.
+   * @default { intervalMs: 15_000 }
+   */
+  readonly heartbeat?: HeartbeatConfig
+}
+
 /**
  * `CloudStore.Live(opts)` — returns a `Layer` providing `EventStore` that
  * delegates every operation to the RxWeave cloud over HTTP/NDJSON.
@@ -459,6 +488,32 @@ export const CloudStore = {
       // drainBeforeSubscribe is intentionally omitted here — CLI/Node
       // consumers have no fetch-buffer pathology and Subscribe handles
       // replay. LiveFromBrowser (Task 14) sets the flag to true.
+    })
+  },
+
+  /**
+   * `CloudStore.LiveFromBrowser(opts)` — browser-shaped sibling to
+   * `CloudStore.Live`. Derives the RPC URL and session-token URL from a
+   * single `origin`, wires `sessionTokenFetch` for auth (with 401-retry),
+   * enables heartbeat (default 15 s), and sets `drainBeforeSubscribe: true`
+   * to page through history via QueryAfter before opening the live tail.
+   *
+   * Two paths are needed from a single `origin` — `/rxweave/rpc/` for RPC
+   * and `/rxweave/session-token` (or a custom `tokenPath`) for auth — which
+   * is why the browser factory takes `{ origin }` instead of `{ url, token }`.
+   *
+   * Requires `EventRegistry` from the ambient context (same as `Live`).
+   */
+  LiveFromBrowser: (opts: LiveFromBrowserOpts): Layer.Layer<EventStore, never, EventRegistry> => {
+    const tokenPath = opts.tokenPath ?? DEFAULT_TOKEN_PATH
+    const heartbeat = opts.heartbeat ?? DEFAULT_BROWSER_HEARTBEAT
+    const url = `${opts.origin}/rxweave/rpc/`
+    const auth = sessionTokenFetch({ origin: opts.origin, tokenPath })
+    return makeLive({
+      url,
+      transformClient: auth.transformClient,
+      heartbeat,
+      drainBeforeSubscribe: true,
     })
   },
 }
