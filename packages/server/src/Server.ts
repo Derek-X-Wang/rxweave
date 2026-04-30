@@ -111,8 +111,8 @@ const rpcImpl = RxWeaveRpc.toLayer({
   Subscribe: (payload) =>
     subscribeHandler(
       payload.filter === undefined
-        ? { cursor: payload.cursor }
-        : { cursor: payload.cursor, filter: payload.filter },
+        ? { cursor: payload.cursor, heartbeat: payload.heartbeat }
+        : { cursor: payload.cursor, filter: payload.filter, heartbeat: payload.heartbeat },
     ),
   GetById: getByIdHandler,
   Query: queryHandler,
