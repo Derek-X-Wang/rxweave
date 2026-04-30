@@ -21,10 +21,12 @@ import { importCommand } from "../src/commands/import.js"
 // import now validates like emit --batch, so each type must be known.
 const registerDemoSchemas = Effect.gen(function* () {
   const reg = yield* EventRegistry
-  for (const t of ["demo.ping", "demo.pong", "demo.pang"] as const) {
-    const def = defineEvent(t, Schema.Unknown as unknown as Schema.Schema<unknown, unknown>)
-    yield* reg.register(def as never).pipe(Effect.orElseSucceed(() => undefined))
-  }
+  const defs = [
+    defineEvent("demo.ping", Schema.Unknown as unknown as Schema.Schema<unknown, unknown>),
+    defineEvent("demo.pong", Schema.Unknown as unknown as Schema.Schema<unknown, unknown>),
+    defineEvent("demo.pang", Schema.Unknown as unknown as Schema.Schema<unknown, unknown>),
+  ]
+  yield* reg.registerAll(defs as never, { swallowDuplicates: true })
 })
 
 describe("import command", () => {
