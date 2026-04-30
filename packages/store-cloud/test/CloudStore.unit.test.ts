@@ -590,3 +590,75 @@ describe("CloudStore — heartbeat filter ordering", () => {
     }).pipe(Effect.provide(EventRegistry.Live)),
   )
 })
+
+describe("CloudStore — watchdog triggers reconnect from lastDelivered", () => {
+  it.scoped("after WatchdogTimeout, the next Subscribe call uses lastDelivered cursor", () =>
+    Effect.gen(function* () {
+      const reg = yield* EventRegistry
+      const subscribeCalls: Array<unknown> = []
+      let attempt = 0
+      const mockClient: CloudRpcClient = {
+        Append: () => Effect.succeed([]),
+        Subscribe: (input) => {
+          subscribeCalls.push(input.cursor)
+          attempt += 1
+          if (attempt === 1) {
+            // First connection: emit one envelope, one heartbeat, then go silent.
+            // The envelope sets lastDelivered to "evt-A"; the heartbeat arms the
+            // watchdog. After clock advances past 3 × intervalMs, WatchdogTimeout
+            // fires, Stream.retry triggers a reconnect.
+            return Stream.concat(
+              Stream.fromIterable([
+                {
+                  id: "evt-A",
+                  type: "x",
+                  actor: "a",
+                  source: "cli" as const,
+                  timestamp: 0,
+                  payload: {},
+                } as unknown as never,
+                { _tag: "Heartbeat", at: 0 } as unknown as never,
+              ]),
+              Stream.never,
+            )
+          }
+          // Reconnect: emit another envelope and complete so Stream.take(2) finishes.
+          return Stream.fromIterable([
+            {
+              id: "evt-B",
+              type: "x",
+              actor: "a",
+              source: "cli" as const,
+              timestamp: 0,
+              payload: {},
+            } as unknown as never,
+          ])
+        },
+        GetById: () => Effect.die("unused"),
+        Query: () => Effect.die("unused"),
+        QueryAfter: () => Effect.die("unused"),
+      }
+      const shape = yield* makeCloudEventStore(mockClient, reg, {
+        heartbeat: { intervalMs: 1000 },
+      })
+      const fiber = yield* Effect.fork(
+        Stream.runCollect(shape.subscribe({ cursor: "cursor-init" }).pipe(Stream.take(2))),
+      )
+      // Phase 1: advance past the watchdog threshold (3 × 1000ms = 3000ms strict).
+      // The watchdog polls at 1Hz; at t=4000ms `4000 - 0 > 3000` fires WatchdogTimeout.
+      yield* TestClock.adjust("4100 millis")
+      // Phase 2: advance through the exponential backoff retry delay (500ms initial)
+      // so the retry connects, the second Subscribe returns evt-B, and take(2) is
+      // satisfied (evt-A from first attempt + evt-B from retry).
+      yield* TestClock.adjust("1000 millis")
+      const exit = yield* Fiber.await(fiber)
+
+      // Two subscribe attempts: first opened at "cursor-init", reconnect
+      // opened at "evt-A" (the lastDelivered as of WatchdogTimeout).
+      expect(subscribeCalls.length).toBeGreaterThanOrEqual(2)
+      expect(subscribeCalls[0]).toBe("cursor-init")
+      expect(subscribeCalls[1]).toBe("evt-A")
+      expect(exit._tag).toBe("Success")
+    }).pipe(Effect.provide(EventRegistry.Live)),
+  )
+})
