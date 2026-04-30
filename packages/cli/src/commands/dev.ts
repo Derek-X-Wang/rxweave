@@ -44,7 +44,7 @@ export const devCommand = Command.make("dev", { config: configOption }, ({ confi
     const startup = Effect.gen(function* () {
       const cfg = yield* loadConfig(absConfig)
       const reg = yield* EventRegistry
-      for (const def of cfg.schemas) yield* reg.register(def)
+      yield* reg.registerAll(cfg.schemas)
       // `supervise` publishes R = unknown in its `.d.ts` because the
       // AgentDef<any> generic collapses at the module boundary. We know
       // from the source that it only needs EventStore + AgentCursorStore

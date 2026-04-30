@@ -40,8 +40,6 @@ export const resolveStoreLayer = (configPath: string) =>
     if (!exists) return MemoryStore.Live as Layer.Layer<EventStore>
     const cfg = yield* loadConfig(abs)
     const reg = yield* EventRegistry
-    for (const def of cfg.schemas) {
-      yield* reg.register(def).pipe(Effect.orElseSucceed(() => undefined))
-    }
+    yield* reg.registerAll(cfg.schemas, { swallowDuplicates: true })
     return Layer.orDie(cfg.store) as Layer.Layer<EventStore>
   })

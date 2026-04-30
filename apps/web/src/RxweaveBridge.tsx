@@ -132,13 +132,10 @@ export function RxweaveBridge({ editor }: { editor: Editor }) {
         await runtime.runPromise(
           Effect.gen(function* () {
             const reg = yield* EventRegistry
-            for (const def of CANVAS_SCHEMAS)
-              yield* reg
-                .register(def)
-                // Duplicate on hot-reload re-mount inside a single
-                // page load — silently continue rather than hard-fail
-                // the bridge init.
-                .pipe(Effect.catchTag("DuplicateEventType", () => Effect.void))
+            // swallowDuplicates: true handles Vite HMR re-mounts where
+            // the same schema set is re-imported into an already-live
+            // registry inside a single page load.
+            yield* reg.registerAll(CANVAS_SCHEMAS, { swallowDuplicates: true })
           }),
         )
       } catch (err) {

@@ -48,7 +48,7 @@ const program = Effect.gen(function* () {
   // push — that's what allows browser → server Append RPCs to pass
   // the digest check without a separate RegistryPush round-trip.
   const reg = yield* EventRegistry
-  for (const def of CANVAS_SCHEMAS) yield* reg.register(def)
+  yield* reg.registerAll(CANVAS_SCHEMAS)
 
   // Mint the token and kick off the suggester import in parallel —
   // the import resolves `@ai-sdk/anthropic` + the suggester module
