@@ -2,6 +2,7 @@ import { describe, expect } from "vitest"
 import { it } from "@effect/vitest"
 import { Effect, Schema } from "effect"
 import { defineEvent, EventRegistry } from "../src/Registry.js"
+import { DuplicateEventType } from "../src/Errors.js"
 
 const NodeCreated = defineEvent(
   "canvas.node.created",
@@ -121,7 +122,7 @@ describe("EventRegistry.registerAll", () => {
         .pipe(Effect.either)
       expect(result._tag).toBe("Left")
       if (result._tag === "Left") {
-        expect((result.left as { _tag?: string })._tag).toMatch(/Duplicate/)
+        expect(result.left).toBeInstanceOf(DuplicateEventType)
       }
     }).pipe(Effect.provide(EventRegistry.Live)),
   )

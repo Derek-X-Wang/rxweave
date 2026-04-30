@@ -32,6 +32,12 @@ export const digestOne = (def: EventDef): string => {
 
 export interface EventRegistryShape {
   readonly register:    (def: EventDef) => Effect.Effect<void, DuplicateEventType>
+  /**
+   * Register a batch of event definitions.
+   *
+   * Items are registered sequentially; if a registration fails mid-batch,
+   * previously registered items are NOT rolled back.
+   */
   readonly registerAll: (
     defs: ReadonlyArray<EventDef>,
     opts?: { readonly swallowDuplicates?: boolean },
