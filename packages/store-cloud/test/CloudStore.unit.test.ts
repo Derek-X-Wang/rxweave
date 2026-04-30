@@ -817,44 +817,67 @@ describe("CloudStore.LiveFromBrowser", () => {
     }).pipe(Effect.scoped),
   )
 
-  it.effect("LiveFromBrowser uses ${origin}/rxweave/rpc/ as URL", () =>
-    // We verify the RPC URL is constructed correctly by checking that the
-    // layer builds successfully when we provide an origin. The URL used for
-    // the RPC endpoint is ${origin}/rxweave/rpc/ — this is confirmed
-    // indirectly because the layer is constructed without throwing.
+  it.effect("LiveFromBrowser derives token URL from ${origin}/rxweave/session-token", () =>
+    // Verify that the token-endpoint URL is constructed correctly from the
+    // origin. We install a mock fetch that:
+    //   1. Responds to the session-token endpoint, capturing its URL.
+    //   2. Responds to the RPC endpoint with a valid NDJSON Exit frame
+    //      so the append call completes without hanging.
+    //
+    // The request ID is extracted from the NDJSON request body so the
+    // Exit frame can reference it — the @effect/rpc HTTP protocol waits
+    // for a matching Exit before resolving the Append effect.
     Effect.gen(function* () {
       const origin = "http://test-origin.invalid"
-      const expectedRpcUrl = `${origin}/rxweave/rpc/`
-      // The layer factory must not throw when constructing with a well-formed origin.
-      const layer = CloudStore.LiveFromBrowser({ origin })
-      expect(layer).toBeDefined()
-      // We can't easily intercept the URL at this level without HTTP, but we can
-      // verify the tokenPath default is /rxweave/session-token by checking the
-      // token fetch URL when the layer is materialized.
       const tokenUrls: Array<string> = []
       const restore = installMockFetch(async (req) => {
         if (req.url.includes("/rxweave/session-token")) {
           tokenUrls.push(req.url)
           return new Response("rxk_test\n", { status: 200 })
         }
-        // Simulate rpc endpoint
+        // RPC endpoint: parse the request body to extract the requestId,
+        // then return a valid NDJSON Exit frame so the @effect/rpc client
+        // resolves the pending Append without hanging.
         if (req.url.includes("/rxweave/rpc/")) {
-          return new Response("", { status: 200 })
+          const text = await req.text()
+          // The NDJSON body is a single Request line; extract the id field.
+          const firstLine = text.split("\n").find((l) => l.trim().length > 0) ?? ""
+          let requestId = "1"
+          try {
+            const parsed = JSON.parse(firstLine) as { id?: string }
+            if (typeof parsed.id === "string") requestId = parsed.id
+          } catch {
+            // leave requestId as "1"
+          }
+          // Emit a Success Exit frame: Append returns Array<EventEnvelope>,
+          // so the success value is an empty array.
+          const frame = JSON.stringify({
+            _tag: "Exit",
+            requestId,
+            exit: { _tag: "Success", value: [] },
+          })
+          return new Response(`${frame}\n`, {
+            status: 200,
+            headers: { "Content-Type": "application/ndjson" },
+          })
         }
         return new Response("", { status: 200 })
       })
       try {
+        const layer = CloudStore.LiveFromBrowser({ origin })
         const full = Layer.provide(layer, EventRegistry.Live)
         const ctx = yield* Layer.build(full)
         const store = Context.get(ctx, EventStore)
-        // Trigger an operation to materialize the token fetch
-        const _cursor = yield* store.latestCursor
-        // Even before hitting the network, the layer is constructed.
-        // The key assertion is that construction succeeds with the right shape.
-        expect(expectedRpcUrl).toBe("http://test-origin.invalid/rxweave/rpc/")
+        // Trigger the auth path: append fires mapRequestEffect → provider()
+        // → fetch(tokenUrl). The mock RPC response is a valid Exit frame
+        // so the append completes successfully.
+        yield* store.append([])
       } finally {
         restore()
       }
+      // The token fetch must have fired with the expected URL.
+      expect(tokenUrls.length).toBeGreaterThan(0)
+      expect(tokenUrls[0]).toBe("http://test-origin.invalid/rxweave/session-token")
     }).pipe(Effect.scoped),
   )
 
