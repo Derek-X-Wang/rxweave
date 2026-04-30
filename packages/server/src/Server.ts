@@ -104,16 +104,18 @@ export interface ServerHandle {
  */
 const rpcImpl = RxWeaveRpc.toLayer({
   Append: appendHandler,
-  // Subscribe adapter: the wire's `filter?: Filter | undefined` (from
-  // `Schema.optional(Filter)`) isn't directly assignable to the
-  // handler's `filter?: Filter` under exactOptionalPropertyTypes.
-  // Forward conditionally — same runtime behaviour, one TS-only hop.
+  // Subscribe adapter: the wire's `filter?: Filter | undefined` and
+  // `heartbeat?: HeartbeatConfig | undefined` (from Schema.optional)
+  // aren't directly assignable to the handler's optional params under
+  // exactOptionalPropertyTypes — explicit `undefined` is rejected.
+  // Conditionally spread both so the property is omitted, not present
+  // as undefined.
   Subscribe: (payload) =>
-    subscribeHandler(
-      payload.filter === undefined
-        ? { cursor: payload.cursor, heartbeat: payload.heartbeat }
-        : { cursor: payload.cursor, filter: payload.filter, heartbeat: payload.heartbeat },
-    ),
+    subscribeHandler({
+      cursor: payload.cursor,
+      ...(payload.filter !== undefined ? { filter: payload.filter } : {}),
+      ...(payload.heartbeat !== undefined ? { heartbeat: payload.heartbeat } : {}),
+    }),
   GetById: getByIdHandler,
   Query: queryHandler,
   QueryAfter: queryAfterHandler,
