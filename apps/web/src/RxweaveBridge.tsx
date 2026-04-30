@@ -1,5 +1,5 @@
 import { useEffect } from "react"
-import { Effect, Layer, ManagedRuntime, Stream } from "effect"
+import { Cause, Effect, Layer, ManagedRuntime, Stream } from "effect"
 import type { Editor, TLRecord } from "tldraw"
 import { EventStore } from "@rxweave/core"
 import { EventRegistry } from "@rxweave/schema"
@@ -195,7 +195,7 @@ export function RxweaveBridge({ editor }: { editor: Editor }) {
         }).pipe(
           Effect.tapErrorCause((cause) =>
             Effect.sync(() =>
-              console.warn("[web] subscribe error:", cause),
+              console.warn("[web] subscribe cause:\n" + Cause.pretty(cause)),
             ),
           ),
         ),
