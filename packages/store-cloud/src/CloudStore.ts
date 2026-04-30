@@ -308,6 +308,57 @@ export const makeCloudEventStore = (
   })
 
 /**
+ * Private core that composes the protocol stack and wires up the
+ * EventStore. Called by `CloudStore.Live` (and, in Task 14, by
+ * `CloudStore.LiveFromBrowser`) with their respective per-auth-mode
+ * `transformClient` functions.
+ *
+ * `drainBeforeSubscribe` is accepted in the config type now so that
+ * Task 13 can plumb it through to `makeCloudEventStore` without
+ * changing this signature. For now it is received but not forwarded —
+ * `makeCloudEventStore` doesn't yet read the field.
+ */
+const makeLive = (config: {
+  readonly url: string
+  readonly transformClient: <E, R>(
+    c: HttpClient.HttpClient.With<E, R>,
+  ) => HttpClient.HttpClient.With<E, R>
+  readonly heartbeat?: HeartbeatConfig
+  readonly drainBeforeSubscribe?: boolean
+}): Layer.Layer<EventStore, never, EventRegistry> => {
+  // Protocol layer: HTTP over fetch with NDJSON. The bearer token is
+  // attached via `transformClient` — `withBearerToken` applies
+  // `HttpClient.mapRequestEffect` so each request resolves the token
+  // lazily (supports rotating credentials).
+  const ProtocolLayer = RpcClient.layerProtocolHttp({
+    url: config.url,
+    transformClient: config.transformClient,
+  }).pipe(
+    Layer.provide(FetchHttpClient.layer),
+    Layer.provide(RpcSerialization.layerNdjson),
+  )
+
+  const StoreEffect = Effect.gen(function* () {
+    const client = yield* RpcClient.make(RxWeaveRpc)
+    const registry = yield* EventRegistry
+    // `RpcClient.make(RxWeaveRpc)` returns a client whose error
+    // channels are fully typed against the wire errors; the
+    // structural `CloudRpcClient` surface erases those into
+    // `unknown` (they're all re-mapped into `AppendError` /
+    // `SubscribeError` / etc. inside `makeCloudEventStore`).
+    const cloudOpts =
+      config.heartbeat !== undefined ? { heartbeat: config.heartbeat } : undefined
+    return yield* makeCloudEventStore(
+      client as unknown as CloudRpcClient,
+      registry,
+      cloudOpts,
+    )
+  })
+
+  return Layer.scoped(EventStore, StoreEffect).pipe(Layer.provide(ProtocolLayer))
+}
+
+/**
  * `CloudStore.Live(opts)` — returns a `Layer` providing `EventStore` that
  * delegates every operation to the RxWeave cloud over HTTP/NDJSON.
  *
@@ -340,36 +391,13 @@ export const CloudStore = {
           return <E, R>(client: HttpClient.HttpClient.With<E, R>) =>
             withRefreshOn401(token)(withBearerToken(token)(client))
         })()
-    // Protocol layer: HTTP over fetch with NDJSON. The bearer token is
-    // attached via `transformClient` — `withBearerToken` applies
-    // `HttpClient.mapRequestEffect` so each request resolves the token
-    // lazily (supports rotating credentials).
-    const ProtocolLayer = RpcClient.layerProtocolHttp({
+
+    return makeLive({
       url: opts.url,
       transformClient,
-    }).pipe(
-      Layer.provide(FetchHttpClient.layer),
-      Layer.provide(RpcSerialization.layerNdjson),
-    )
-
-    const StoreEffect = Effect.gen(function* () {
-      const client = yield* RpcClient.make(RxWeaveRpc)
-      const registry = yield* EventRegistry
-      // `RpcClient.make(RxWeaveRpc)` returns a client whose error
-      // channels are fully typed against the wire errors; the
-      // structural `CloudRpcClient` surface erases those into
-      // `unknown` (they're all re-mapped into `AppendError` /
-      // `SubscribeError` / etc. inside `makeCloudEventStore`).
-      const cloudOpts = opts.heartbeat !== undefined
-        ? { heartbeat: opts.heartbeat }
-        : undefined
-      return yield* makeCloudEventStore(
-        client as unknown as CloudRpcClient,
-        registry,
-        cloudOpts,
-      )
+      ...(opts.heartbeat !== undefined ? { heartbeat: opts.heartbeat } : {}),
+      // drainBeforeSubscribe defaults to false for CLI/Node — they have
+      // no fetch-buffer pathology and Subscribe handles replay.
     })
-
-    return Layer.scoped(EventStore, StoreEffect).pipe(Layer.provide(ProtocolLayer))
   },
 }
