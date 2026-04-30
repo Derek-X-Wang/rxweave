@@ -407,3 +407,32 @@ describe("CloudStore (unit)", () => {
     }),
   )
 })
+
+describe("CloudStore — per-subscriber cursor state", () => {
+  it.effect("two concurrent subscribers don't share lastDelivered", () =>
+    Effect.gen(function* () {
+      const reg = yield* EventRegistry
+      const subscribeCalls: Array<string> = []
+      const mockClient: CloudRpcClient = {
+        Append: () => Effect.succeed([]),
+        Subscribe: (input) => {
+          subscribeCalls.push(input.cursor)
+          return Stream.fromIterable([
+            { id: `evt-after-${input.cursor}`, type: "x", actor: "a", source: "cli", timestamp: 0, payload: {} },
+          ] as unknown as Array<never>)
+        },
+        GetById: () => Effect.die("unused"),
+        Query: () => Effect.die("unused"),
+        QueryAfter: () => Effect.die("unused"),
+      }
+
+      const shape = yield* makeCloudEventStore(mockClient, reg)
+
+      yield* Stream.runCollect(shape.subscribe({ cursor: "cursor-A" }).pipe(Stream.take(1)))
+      yield* Stream.runCollect(shape.subscribe({ cursor: "earliest" }).pipe(Stream.take(1)))
+
+      expect(subscribeCalls[0]).toBe("cursor-A")
+      expect(subscribeCalls[1]).toBe("earliest")
+    }).pipe(Effect.provide(EventRegistry.Live)),
+  )
+})

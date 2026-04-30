@@ -114,15 +114,10 @@ export const makeCloudEventStore = (
   registry: EventRegistry["Type"],
 ): Effect.Effect<EventStoreShape, never, never> =>
   Effect.gen(function* () {
-    // Tracks the last event id delivered by `subscribe`. Used by the
-    // reconnect path so `connect` resumes exclusive of the most
-    // recent delivered id — the cloud cursor is exclusive, so this
-    // guarantees no duplicates nor losses across a reconnect.
-    const lastDelivered = yield* Ref.make<Cursor>("latest")
     // Tracks the id of the most recently *appended* envelope. Per the
     // EventStore §5 contract, `latestCursor` is append-scoped ("id of
     // most recent append, or 'earliest' if empty") — distinct from
-    // `lastDelivered`, which is subscribe-scoped.
+    // `lastDelivered`, which is subscribe-scoped (see below).
     const lastAppended = yield* Ref.make<Cursor>("earliest")
 
     const shape: EventStoreShape = {
@@ -144,38 +139,53 @@ export const makeCloudEventStore = (
           ),
         ),
 
-      subscribe: ({ cursor, filter }) => {
-        // Each (re)connection re-reads `lastDelivered` so a reconnect
-        // after some events were already delivered resumes from the
-        // most recent one, not the original cursor. Only the
-        // Stream.tap below writes to `lastDelivered`.
-        const connect = Effect.gen(function* () {
-          const resumeFrom = yield* Ref.get(lastDelivered)
-          const effectiveCursor =
-            resumeFrom === "latest" ? cursor : resumeFrom
-          return client
-            .Subscribe(
-              filter === undefined
-                ? { cursor: effectiveCursor }
-                : { cursor: effectiveCursor, filter },
-            )
-            .pipe(Stream.tap((e) => Ref.set(lastDelivered, e.id)))
-        })
+      subscribe: ({ cursor, filter }) =>
+        // Per-subscribe cursor state. Each call gets a fresh Ref so
+        // concurrent subscribers don't clobber each other's resume
+        // position. Pre-v0.5 the Ref was layer-global; that contract
+        // was never observable because no caller relied on cross-
+        // subscribe sharing.
+        Stream.unwrap(
+          Effect.gen(function* () {
+            // Tracks the last event id delivered by this subscriber.
+            // Used by the reconnect path so `connect` resumes exclusive
+            // of the most recent delivered id — the cloud cursor is
+            // exclusive, so this guarantees no duplicates nor losses
+            // across a reconnect.
+            const lastDelivered = yield* Ref.make<Cursor>("latest")
 
-        return Stream.unwrap(connect).pipe(
-          // Exponential backoff 500ms × 1.5, capped at 10 retries, but
-          // GATED by `isRetryable` so permanent errors (NotFound,
-          // RegistryWireError, unknown) short-circuit to Stream.fail
-          // instead of consuming the retry budget.
-          Stream.retry(
-            Schedule.exponential(Duration.millis(500), 1.5).pipe(
-              Schedule.intersect(Schedule.recurs(10)),
-              Schedule.whileInput(isRetryable),
-            ),
-          ),
-          Stream.mapError(() => new SubscribeError({ reason: "cloud-subscribe" })),
-        )
-      },
+            // Each (re)connection re-reads `lastDelivered` so a reconnect
+            // after some events were already delivered resumes from the
+            // most recent one, not the original cursor. Only the
+            // Stream.tap below writes to `lastDelivered`.
+            const connect = Effect.gen(function* () {
+              const resumeFrom = yield* Ref.get(lastDelivered)
+              const effectiveCursor =
+                resumeFrom === "latest" ? cursor : resumeFrom
+              return client
+                .Subscribe(
+                  filter === undefined
+                    ? { cursor: effectiveCursor }
+                    : { cursor: effectiveCursor, filter },
+                )
+                .pipe(Stream.tap((e) => Ref.set(lastDelivered, e.id)))
+            })
+
+            return Stream.unwrap(connect).pipe(
+              // Exponential backoff 500ms × 1.5, capped at 10 retries, but
+              // GATED by `isRetryable` so permanent errors (NotFound,
+              // RegistryWireError, unknown) short-circuit to Stream.fail
+              // instead of consuming the retry budget.
+              Stream.retry(
+                Schedule.exponential(Duration.millis(500), 1.5).pipe(
+                  Schedule.intersect(Schedule.recurs(10)),
+                  Schedule.whileInput(isRetryable),
+                ),
+              ),
+              Stream.mapError(() => new SubscribeError({ reason: "cloud-subscribe" })),
+            )
+          }),
+        ),
 
       getById: (id) =>
         client.GetById({ id }).pipe(Effect.mapError(() => new NotFound({ id }))),
