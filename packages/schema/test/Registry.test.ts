@@ -86,3 +86,43 @@ describe("EventRegistry", () => {
     }).pipe(Effect.provide(EventRegistry.Live)),
   )
 })
+
+describe("EventRegistry.registerAll", () => {
+  it.effect("registers a fresh batch", () =>
+    Effect.gen(function* () {
+      const reg = yield* EventRegistry
+      const A = defineEvent("a", Schema.Struct({ x: Schema.Number }))
+      const B = defineEvent("b", Schema.Struct({ y: Schema.String }))
+      yield* reg.registerAll([A, B])
+      const all = yield* reg.all
+      expect(all.map((d) => d.type).sort()).toEqual(["a", "b"])
+    }).pipe(Effect.provide(EventRegistry.Live)),
+  )
+
+  it.effect("with swallowDuplicates: identical re-registration is a no-op", () =>
+    Effect.gen(function* () {
+      const reg = yield* EventRegistry
+      const A = defineEvent("a", Schema.Struct({ x: Schema.Number }))
+      yield* reg.register(A)
+      yield* reg.registerAll([A], { swallowDuplicates: true })
+      const all = yield* reg.all
+      expect(all.length).toBe(1)
+    }).pipe(Effect.provide(EventRegistry.Live)),
+  )
+
+  it.effect("with swallowDuplicates: conflicting redefinition still errors", () =>
+    Effect.gen(function* () {
+      const reg = yield* EventRegistry
+      const A1 = defineEvent("a", Schema.Struct({ x: Schema.Number }))
+      const A2 = defineEvent("a", Schema.Struct({ x: Schema.String }))
+      yield* reg.register(A1)
+      const result = yield* reg
+        .registerAll([A2], { swallowDuplicates: true })
+        .pipe(Effect.either)
+      expect(result._tag).toBe("Left")
+      if (result._tag === "Left") {
+        expect((result.left as { _tag?: string })._tag).toMatch(/Duplicate/)
+      }
+    }).pipe(Effect.provide(EventRegistry.Live)),
+  )
+})

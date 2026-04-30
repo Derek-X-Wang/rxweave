@@ -31,7 +31,11 @@ export const digestOne = (def: EventDef): string => {
 }
 
 export interface EventRegistryShape {
-  readonly register: (def: EventDef) => Effect.Effect<void, DuplicateEventType>
+  readonly register:    (def: EventDef) => Effect.Effect<void, DuplicateEventType>
+  readonly registerAll: (
+    defs: ReadonlyArray<EventDef>,
+    opts?: { readonly swallowDuplicates?: boolean },
+  ) => Effect.Effect<void, DuplicateEventType>
   readonly lookup:   (type: string)  => Effect.Effect<EventDef, UnknownEventType>
   readonly all:      Effect.Effect<ReadonlyArray<EventDef>>
   readonly digest:   Effect.Effect<string>
@@ -62,6 +66,25 @@ export class EventRegistry extends Context.Tag("rxweave/EventRegistry")<
             )
           }),
         )
+      const registerAll: EventRegistryShape["registerAll"] = (defs, opts) =>
+        Effect.forEach(defs, (def) =>
+          register(def).pipe(
+            Effect.catchTag("DuplicateEventType", (err) => {
+              if (opts?.swallowDuplicates !== true) return Effect.fail(err)
+              // Swallow only when the existing def has the same digest;
+              // a digest mismatch is a genuine schema conflict — always error.
+              return Ref.get(store).pipe(
+                Effect.flatMap((map) => {
+                  const existing = map.get(def.type)
+                  if (existing !== undefined && digestOne(existing) === digestOne(def)) {
+                    return Effect.void
+                  }
+                  return Effect.fail(err)
+                }),
+              )
+            }),
+          ),
+        ).pipe(Effect.asVoid)
       const lookup: EventRegistryShape["lookup"] = (type) =>
         Ref.get(store).pipe(
           Effect.flatMap((map) => {
@@ -107,7 +130,7 @@ export class EventRegistry extends Context.Tag("rxweave/EventRegistry")<
           ),
         ),
       )
-      return { register, lookup, all, digest, wire }
+      return { register, registerAll, lookup, all, digest, wire }
     }),
   )
 }
