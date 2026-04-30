@@ -116,18 +116,21 @@ jobs:
           TMPDIR=$(mktemp -d)
           cd "$TMPDIR"
           printf '{"name":"rxweave-smoke","private":true}\n' > package.json
-          # npm registry propagation can lag a few seconds after
-          # `changeset publish` returns. Retry before declaring failure.
-          for i in 1 2 3 4 5; do
+          # npm registry propagation can lag noticeably after
+          # `changeset publish` returns. v0.5.0's run hit a propagation
+          # window > 50 s for `@rxweave/cli@0.5.0`; budget bumped to
+          # 10 × 15 s = 150 s, which a manual probe 3 min post-publish
+          # found to be the comfortable settle window.
+          for i in 1 2 3 4 5 6 7 8 9 10; do
             if bun add "@rxweave/cli@$VERSION"; then
               break
             fi
-            if [ "$i" = "5" ]; then
-              echo "::error::bun add @rxweave/cli@$VERSION failed after 5 attempts"
+            if [ "$i" = "10" ]; then
+              echo "::error::bun add @rxweave/cli@$VERSION failed after 10 attempts (~150s)"
               exit 1
             fi
-            echo "attempt $i failed, retrying in 10s..."
-            sleep 10
+            echo "attempt $i failed, retrying in 15s..."
+            sleep 15
           done
           ACTUAL=$(bunx rxweave --version)
           if [ "$ACTUAL" != "$VERSION" ]; then
