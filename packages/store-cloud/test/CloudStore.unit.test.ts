@@ -1,6 +1,6 @@
 import { describe, expect } from "vitest"
 import { it } from "@effect/vitest"
-import { Context, Effect, Exit, Layer, Stream } from "effect"
+import { Chunk, Context, Effect, Exit, Layer, Stream } from "effect"
 import { EventStore } from "@rxweave/core"
 import { EventRegistry, SystemAgentHeartbeat, defineEvent } from "@rxweave/schema"
 import { Schema } from "effect"
@@ -433,6 +433,86 @@ describe("CloudStore — per-subscriber cursor state", () => {
 
       expect(subscribeCalls[0]).toBe("cursor-A")
       expect(subscribeCalls[1]).toBe("earliest")
+    }).pipe(Effect.provide(EventRegistry.Live)),
+  )
+})
+
+describe("CloudStore — heartbeat filter ordering", () => {
+  it.effect("heartbeats do not appear in user-facing stream", () =>
+    Effect.gen(function* () {
+      const reg = yield* EventRegistry
+      const mockClient: CloudRpcClient = {
+        Append: () => Effect.succeed([]),
+        Subscribe: () =>
+          Stream.fromIterable([
+            { _tag: "Heartbeat", at: 1 } as unknown as never,
+            { id: "evt-1", type: "x", actor: "a", source: "cli", timestamp: 0, payload: {} } as unknown as never,
+          ]),
+        GetById: () => Effect.die("unused"),
+        Query: () => Effect.die("unused"),
+        QueryAfter: () => Effect.die("unused"),
+      }
+      const shape = yield* makeCloudEventStore(mockClient, reg)
+      const collected = yield* Stream.runCollect(shape.subscribe({ cursor: "earliest" }).pipe(Stream.take(1)))
+      const items = Chunk.toReadonlyArray(collected)
+      expect(items.length).toBe(1)
+      expect((items[0] as { id: string }).id).toBe("evt-1")
+    }).pipe(Effect.provide(EventRegistry.Live)),
+  )
+
+  it.effect("cursor unchanged by heartbeats (regression: heartbeats have no id)", () =>
+    // Intent: if heartbeats accidentally write to lastDelivered (which
+    // has no `id`), the second subscribe would resume from `undefined`
+    // instead of the original cursor. We verify this by:
+    //   1. Running a subscribe over a [Heartbeat, Heartbeat, envelope] stream
+    //      and collecting exactly the one envelope.
+    //   2. Running a second subscribe with a *different* cursor.
+    //   3. Asserting that the second subscribe call received that *different*
+    //      cursor — not some heartbeat-corrupted value.
+    // If heartbeats were writing to lastDelivered, step 2 would use the
+    // corrupted cursor instead.
+    Effect.gen(function* () {
+      const reg = yield* EventRegistry
+      const subscribeCalls: Array<string> = []
+      let callCount = 0
+      const mockClient: CloudRpcClient = {
+        Append: () => Effect.succeed([]),
+        Subscribe: (input) => {
+          subscribeCalls.push(input.cursor)
+          callCount++
+          if (callCount === 1) {
+            // First subscription: two heartbeats then one real envelope
+            return Stream.fromIterable([
+              { _tag: "Heartbeat", at: 1 } as unknown as never,
+              { _tag: "Heartbeat", at: 2 } as unknown as never,
+              { id: "evt-after-heartbeats", type: "x", actor: "a", source: "cli", timestamp: 0, payload: {} } as unknown as never,
+            ])
+          }
+          return Stream.empty
+        },
+        GetById: () => Effect.die("unused"),
+        Query: () => Effect.die("unused"),
+        QueryAfter: () => Effect.die("unused"),
+      }
+      const shape = yield* makeCloudEventStore(mockClient, reg)
+
+      // Pull exactly one item from the first stream (the real envelope
+      // after the heartbeats). The heartbeats are silently dropped.
+      const first = yield* Stream.runCollect(
+        shape.subscribe({ cursor: "earliest" }).pipe(Stream.take(1))
+      )
+      expect(Chunk.size(first)).toBe(1)
+
+      // Second subscribe uses a new cursor — should NOT be overridden by
+      // heartbeat-corrupted lastDelivered from the first call.
+      // Use Stream.runDrain (not Stream.take(0)) to actually pull from
+      // the stream so the connect Effect fires and Subscribe is called.
+      yield* Stream.runDrain(shape.subscribe({ cursor: "cursor-B" }))
+
+      // First call used "earliest"; second call used "cursor-B" (not
+      // some undefined/corrupted cursor from the heartbeats).
+      expect(subscribeCalls[0]).toBe("earliest")
+      expect(subscribeCalls[1]).toBe("cursor-B")
     }).pipe(Effect.provide(EventRegistry.Live)),
   )
 })

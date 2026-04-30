@@ -37,6 +37,7 @@ import {
   Duration,
   Effect,
   Layer,
+  Option,
   Ref,
   Schedule,
   Stream,
@@ -168,7 +169,25 @@ export const makeCloudEventStore = (
                     ? { cursor: effectiveCursor }
                     : { cursor: effectiveCursor, filter },
                 )
-                .pipe(Stream.tap((e) => Ref.set(lastDelivered, e.id)))
+                .pipe(
+                  // (1) Watchdog tap will be added BEFORE the filter in Task 9 —
+                  //     reserves position so heartbeats remain observable for it.
+
+                  // (2) Drop heartbeat sentinels from the user-facing stream.
+                  //     They served their byte-flow purpose at the wire level
+                  //     (and will arm the watchdog above); consumers of EventStore
+                  //     should only see EventEnvelopes.
+                  Stream.filterMap((item) => {
+                    const tag = (item as { _tag?: string })._tag
+                    if (tag === "Heartbeat") return Option.none()
+                    return Option.some(item as EventEnvelope)
+                  }),
+                  // (3) Cursor tap runs AFTER the filter so it only sees envelopes
+                  //     with valid `id` fields. Pre-v0.5 this tap was at the head
+                  //     of the pipe; that placement would attempt
+                  //     Ref.set(lastDelivered, undefined) for every heartbeat.
+                  Stream.tap((e) => Ref.set(lastDelivered, e.id)),
+                )
             })
 
             return Stream.unwrap(connect).pipe(
