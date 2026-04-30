@@ -1,7 +1,7 @@
 # RxWeave — Handoff
 
-**Last updated:** 2026-04-29 after v0.5.0 ship.
-**Integration state:** 226 tests (11 packages) + 12 conformance passing at 0.5.0-pre. All 11 `@rxweave/*` packages on npm at 0.4.1; v0.5.0 publish pending user 2FA.
+**Last updated:** 2026-04-30 after v0.5.0 ship to npm.
+**Integration state:** 226 tests (11 packages) + 12 conformance passing. All 11 `@rxweave/*` packages live on npm at v0.5.0 (Trusted Publishing via tag push, verified `npm view`). Manual Safari smoke through cmux WKWebView passed: heartbeats arrive at 1 s cadence, `apps/web` canvas drains 392-event history into 43 visible shapes, no 401s.
 **Read this first** if you're resuming work on RxWeave — in a fresh Claude Code session, from a different machine, or as a new contributor.
 
 ---
@@ -17,9 +17,9 @@
 | `v0.3.0` | `@rxweave/llm` — LLM-backed agents via Vercel AI SDK. Publishing infra: changesets, LICENSE, npm metadata, `workspace:^` refs | 2026-04-19 |
 | `v0.4.0` | CLI + unified stream server: `@rxweave/server` (embeddable HTTP RPC over NDJSON, same wire as cloud), shared protocol handlers, `rxweave serve / import / cursor`, `stream --count|--last|--fold`, `agent run`→`exec`, `apps/canvas`→`apps/web` with embedded-server bridge, cookbooks, reliability tests. **Broken on npm** — see "Release pipeline gotchas" below. | 2026-04-22 |
 | `v0.4.1` | Publish-pipeline fix: rewrite `"workspace:^"` → `"^<version>"` before `changeset publish`. Same code as 0.4.0, actually installable. | 2026-04-23 |
-| `v0.5.0` | Browser streaming: protocol-level heartbeat sentinel (`Heartbeat` variant in Subscribe response union), `CloudStore.LiveFromBrowser({ origin, tokenPath?, heartbeat? })`, `drainBeforeSubscribe` via QueryAfter pagination, per-fiber liveness watchdog with first-heartbeat arming + reconnect from last-delivered cursor. `EventRegistry.registerAll(defs, { swallowDuplicates })` helper. `mkdirSync` folded into `generateAndPersistToken`. `apps/web` canvas schemas relocated from `server/` to `src/shared/`. WebKit fetch-buffer fix end-to-end (Safari works). | 2026-04-29 |
+| `v0.5.0` | Browser streaming: protocol-level heartbeat sentinel (`Heartbeat` variant in Subscribe response union), `CloudStore.LiveFromBrowser({ origin, tokenPath?, heartbeat? })`, `drainBeforeSubscribe` via QueryAfter pagination, per-fiber liveness watchdog with first-heartbeat arming + reconnect from last-delivered cursor. `EventRegistry.registerAll(defs, { swallowDuplicates })` helper. `mkdirSync` folded into `generateAndPersistToken`. `apps/web` canvas schemas relocated from `server/` to `src/shared/`. WebKit fetch-buffer fix end-to-end (Safari works). Caught one ship-blocker during the WKWebView smoke: `sessionTokenFetch` did `text().trim()` on `/rxweave/session-token` but the endpoint returns `{ token: "..." }` JSON — fixed in `f21ad6e`, unit-test mocks updated to use the actual JSON shape. | 2026-04-30 |
 
-**v0.4.1 is the current npm install target** (v0.5.0 publish pending user 2FA — see "Immediate pending" below). All prior versions v0.1.0–v0.4.0 shipped with `workspace:^` in their `dependencies` (broken on `bun add @rxweave/cli` in a fresh dir). Deprecation via `npm deprecate` across 0.1.0–0.4.0 still needs the user's 2FA.
+**v0.5.0 is the current npm install target** (verified `bun add @rxweave/cli@0.5.0` in a fresh `/tmp` dir; `bunx rxweave --version` → `0.5.0`). All prior versions v0.1.0–v0.4.0 shipped with `workspace:^` in their `dependencies` (broken on `bun add @rxweave/cli` in a fresh dir). Per-user note from earlier: `npm deprecate` of those broken versions is intentionally deferred — solo author, no external users today.
 
 ## Key design decisions (locked; do not relitigate without cause)
 
@@ -47,7 +47,7 @@ These are the eight architectural calls that shape the whole project. All are in
 - ESM-only — no CJS, no dual builds
 - `@noble/hashes` for V8-isolate-safe sha256 (schema is portable across Node/Bun/browsers/Convex)
 
-## Sub-project status (all at v0.5.0-pre / 0.4.1 on npm)
+## Sub-project status (all at v0.5.0 — npm + workspace)
 
 | Package | Tests | Notes |
 |---|---|---|
@@ -69,20 +69,15 @@ Workspace apps (private, not published):
 
 ## Immediate pending (carry into the next session)
 
-1. **npm publish v0.5.0** — user runs `bunx changeset version` (auto-commits version bumps + CHANGELOG), then `bunx changeset publish` (requires 2FA per package). The changeset file `.changeset/v0-5-0-browser-streaming.md` is in place.
+1. **cloud-v0.3 adoption** — the heartbeat sentinel is implemented on the rxweave side and is `Schema.optional` on the request payload, so cloud-v0.2 servers silently drop the field (degrades cleanly), but WebKit users on cloud-v0.2 still hit the fetch-buffer stall. Full fix requires a cross-repo PR in `../cloud/`: read the request's `heartbeat` field and interleave `Heartbeat` sentinels into the polling loop's response stream. Spec context: `docs/superpowers/specs/2026-04-25-browser-streaming-design.md` §10.2. ~30 minutes of work, but in a different repo with a different test harness — best done in a dedicated session.
 
-2. **Manual Safari smoke** — open `apps/web` canvas in Safari/WebKit, verify live events arrive sub-second after a subscribe replay burst. This is the end-to-end validation of the WebKit fix; automated tests cover the protocol layer but not the browser runtime.
+2. **CI smoke retry budget already bumped** to 10×15 s = 150 s in `3cc9f14` (the v0.5.0 release run failed on the smoke step because npm registry propagation took longer than the prior 5×10 s budget; manual install ~3 min after publish succeeded immediately, so the publish itself was fine). The next release will validate the bump.
 
-3. **cloud-v0.3 adoption** — the heartbeat sentinel is implemented on the rxweave side; cloud-v0.2 servers tolerate unknown schema keys (degrades cleanly), but WebKit users on cloud-v0.2 still hit the fetch-buffer stall. Full fix requires a cross-repo cloud-v0.3 PR. Separate follow-up.
+### Carried-over from prior HANDOFF (still applicable, lower priority)
 
-4. **Run `npm deprecate` loop** — mark v0.1.0–v0.4.0 as broken with a pointer at 0.4.1+. Requires 2FA per package:
-    ```bash
-    for pkg in cli core llm protocol reactive runtime schema server store-cloud store-file store-memory; do
-      npm deprecate "@rxweave/$pkg@<=0.4.0" "workspace:^ refs shipped verbatim; use 0.4.1+"
-    done
-    ```
+3. **Manual Safari smoke** — *passed for v0.5.0 via cmux WKWebView*. Repeat for the next release that touches the browser path. The cmux-browser skill is the right tool: `cmux browser open http://localhost:5173/` then probe via `cmux browser surface:N eval "..."` against `/rxweave/session-token` + `/rxweave/rpc` (no trailing slash, `Content-Type: application/ndjson`, `Content-Length` set, body is a single `Request` line + `\n`).
 
-5. **Add a post-publish smoke test** to `.github/workflows/release.yml`: after `bunx changeset publish`, spin up a fresh `/tmp` dir, `bun add @rxweave/cli@<new-version>`, and run `bunx rxweave serve --help`. Catches the next `workspace:^`-class regression in CI. 10-line addition.
+4. **`npm deprecate` of v0.1.0–v0.4.0** — solo-author note: skip until external users exist.
 
 ## Shipped in v0.5.0 (formerly "Deferred follow-ups")
 
@@ -96,7 +91,7 @@ These items were listed as "Deferred follow-ups" for v0.5.0 in the prior HANDOFF
 
 ## Release pipeline — gotchas (hard-won)
 
-Two subtle bugs bit v0.4.0 before v0.4.1 unstuck them. Document both so the next release doesn't re-hit them.
+Three subtle bugs bit v0.4.0 → v0.5.0. Document all so the next release doesn't re-hit them.
 
 ### 1. `corepack prepare npm@11.5.1 --activate` does not actually activate npm on GitHub Actions Ubuntu runners.
 
@@ -135,7 +130,13 @@ npm 10.9.7 writes 11.5.1 into a fresh dir (no self-replace = no `promise-retry` 
 ```
 The grep guard fails the workflow loudly if any reference survives — never ship a broken tarball again. The monorepo is version-locked (all `@rxweave/*` share one version), so a single substitution is safe.
 
-### 3. First-time publish of a new package needs bootstrapping before Trusted Publishing can take over.
+### 3. npm registry propagation outpaces a 50 s smoke retry budget.
+
+Observed v0.5.0: the publish step succeeded (all 11 packages were on npm), but the post-publish smoke step's `bun add @rxweave/cli@0.5.0` retry loop (5 attempts × 10 s sleep = 50 s) exhausted before propagation finished. A manual `bun add` from `/tmp` ~3 minutes post-publish succeeded on the first try. The publish was fine; the smoke budget was too tight.
+
+**Fix (shipped in `3cc9f14`):** budget is now 10 attempts × 15 s = 150 s. That's still well under the Trusted Publishing OIDC token TTL and avoids burning a full hour on a stuck workflow. Validate the bump on the next release that goes through CI.
+
+### 4. First-time publish of a new package needs bootstrapping before Trusted Publishing can take over.
 
 `@rxweave/server` is new in v0.4.0. npm's TP config is per-package, which means a brand-new package with no prior publish has no TP settings page — no way to point TP at the workflow. The first publish fails with `could not be found or you do not have permission to access it` (not a 404; a TP-rejection).
 
