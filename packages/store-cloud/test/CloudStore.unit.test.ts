@@ -864,7 +864,12 @@ describe("CloudStore.LiveFromBrowser", () => {
       const restore = installMockFetch(async (req) => {
         if (req.url.includes("/rxweave/session-token")) {
           tokenUrls.push(req.url)
-          return new Response("rxk_test\n", { status: 200 })
+          // Match the actual `@rxweave/server` SessionToken endpoint shape:
+          // `{ token: string | null }`.
+          return new Response(JSON.stringify({ token: "rxk_test" }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          })
         }
         // RPC endpoint: parse the request body to extract the requestId,
         // then return a valid NDJSON Exit frame so the @effect/rpc client

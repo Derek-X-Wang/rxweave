@@ -169,7 +169,12 @@ describe("sessionTokenFetch", () => {
     const restore = installMockFetch(async (req) => {
       if (req.url.endsWith("/rxweave/session-token")) {
         tokenCalls += 1
-        return new Response("rxk_test_abc123\n", { status: 200 })
+        // Match the actual `@rxweave/server` SessionToken endpoint shape:
+        // `{ token: string | null }`.
+        return new Response(JSON.stringify({ token: "rxk_test_abc123" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        })
       }
       lastAuth = req.headers.get("authorization") ?? undefined
       return new Response("ok", { status: 200 })
@@ -198,7 +203,10 @@ describe("sessionTokenFetch", () => {
     const restore = installMockFetch(async (req) => {
       if (req.url.endsWith("/rxweave/session-token")) {
         tokenCalls += 1
-        return new Response(tokenCalls === 1 ? "rxk_old\n" : "rxk_new\n", { status: 200 })
+        return new Response(
+          JSON.stringify({ token: tokenCalls === 1 ? "rxk_old" : "rxk_new" }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        )
       }
       const auth = req.headers.get("authorization") ?? undefined
       rpcCalls += 1
@@ -230,7 +238,10 @@ describe("sessionTokenFetch", () => {
   test("two consecutive 401s raise AuthFailed", async () => {
     const restore = installMockFetch(async (req) => {
       if (req.url.endsWith("/rxweave/session-token")) {
-        return new Response("rxk_anything\n", { status: 200 })
+        return new Response(JSON.stringify({ token: "rxk_anything" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        })
       }
       return new Response("expired", { status: 401 })
     })

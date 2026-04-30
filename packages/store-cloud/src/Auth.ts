@@ -207,7 +207,18 @@ export const sessionTokenFetch = (opts: {
     if (!r.ok) {
       throw new Error(`session-token fetch failed: ${r.status}`)
     }
-    return (await r.text()).trim()
+    // The endpoint defined by `@rxweave/server`'s `sessionTokenRouteLayer`
+    // returns `{ token: string | null }` — JSON, not a plain string. Parse
+    // and extract `.token`. `null` means the server is in no-auth mode;
+    // we surface it as `undefined` so `withBearerToken` skips the header
+    // (matching the existing token-less mode in `CloudStoreOpts`).
+    const body = await r.text()
+    try {
+      const parsed = JSON.parse(body) as { readonly token?: string | null }
+      return parsed.token ?? undefined
+    } catch {
+      throw new Error(`session-token response was not JSON: ${body.slice(0, 80)}`)
+    }
   }
   const cached = cachedToken(provider)
 
