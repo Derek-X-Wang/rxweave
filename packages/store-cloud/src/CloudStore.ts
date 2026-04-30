@@ -34,6 +34,7 @@
  */
 
 import {
+  Chunk,
   Clock,
   Duration,
   Effect,
@@ -124,7 +125,7 @@ export interface CloudRpcClient {
 export const makeCloudEventStore = (
   client: CloudRpcClient,
   registry: EventRegistry["Type"],
-  opts?: { readonly heartbeat?: HeartbeatConfig },
+  opts?: { readonly heartbeat?: HeartbeatConfig; readonly drainBeforeSubscribe?: boolean },
 ): Effect.Effect<EventStoreShape, never, never> =>
   Effect.gen(function* () {
     // Tracks the id of the most recently *appended* envelope. Per the
@@ -133,6 +134,7 @@ export const makeCloudEventStore = (
     // `lastDelivered`, which is subscribe-scoped (see below).
     const lastAppended = yield* Ref.make<Cursor>("earliest")
     const heartbeatConfig = opts?.heartbeat
+    const drainBeforeSubscribe = opts?.drainBeforeSubscribe === true
 
     const shape: EventStoreShape = {
       append: (events) =>
@@ -268,7 +270,12 @@ export const makeCloudEventStore = (
               )
             })
 
-            return Stream.unwrap(connect).pipe(
+            // Live-tail stream with reconnect. The retry schedule is applied
+            // here so that transient errors (including WatchdogTimeout) are
+            // retried with exponential backoff. Each reconnect re-reads
+            // `lastDelivered` via `connect` so it resumes exactly where it
+            // left off.
+            const subscribeStream = Stream.unwrap(connect).pipe(
               // Exponential backoff 500ms × 1.5, capped at 10 retries, but
               // GATED by `isRetryable` so permanent errors (NotFound,
               // RegistryWireError, unknown) short-circuit to Stream.fail
@@ -281,6 +288,42 @@ export const makeCloudEventStore = (
               ),
               Stream.mapError(() => new SubscribeError({ reason: "cloud-subscribe" })),
             )
+
+            if (!drainBeforeSubscribe) return subscribeStream
+
+            // Drain stream: pages through QueryAfter from the initial cursor
+            // until an empty page is returned, emitting events in order and
+            // updating lastDelivered after each event. When the drain
+            // completes, lastDelivered holds the last drained event's id.
+            // The live subscribeStream's connect then resumes from that id,
+            // so the protocol's exclusive-cursor + snapshot-then-live
+            // semantics guarantee any event appended between the drain's
+            // final empty page and the Subscribe open lands in Subscribe's
+            // snapshot replay — never lost, never duplicated.
+            const drainStream: Stream.Stream<EventEnvelope, SubscribeError, never> =
+              Stream.unfoldChunkEffect(
+                cursor,
+                (currentCursor) =>
+                  client
+                    .QueryAfter({
+                      cursor: currentCursor,
+                      filter: filter ?? { types: undefined, actors: undefined, sources: undefined },
+                      limit: 1024,
+                    })
+                    .pipe(
+                      Effect.orDie,
+                      Effect.map((page) => {
+                        if (page.length === 0)
+                          return Option.none<readonly [Chunk.Chunk<EventEnvelope>, Cursor]>()
+                        const last = page[page.length - 1]!
+                        return Option.some([Chunk.fromIterable(page as ReadonlyArray<EventEnvelope>), last.id] as const)
+                      }),
+                    ),
+              ).pipe(
+                Stream.tap((e: EventEnvelope) => Ref.set(lastDelivered, e.id)),
+              )
+
+            return Stream.concat(drainStream, subscribeStream)
           }),
         ),
 
@@ -347,7 +390,12 @@ const makeLive = (config: {
     // `unknown` (they're all re-mapped into `AppendError` /
     // `SubscribeError` / etc. inside `makeCloudEventStore`).
     const cloudOpts =
-      config.heartbeat !== undefined ? { heartbeat: config.heartbeat } : undefined
+      config.heartbeat !== undefined || config.drainBeforeSubscribe === true
+        ? {
+            ...(config.heartbeat !== undefined ? { heartbeat: config.heartbeat } : {}),
+            ...(config.drainBeforeSubscribe === true ? { drainBeforeSubscribe: true as const } : {}),
+          }
+        : undefined
     return yield* makeCloudEventStore(
       client as unknown as CloudRpcClient,
       registry,

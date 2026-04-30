@@ -662,3 +662,84 @@ describe("CloudStore — watchdog triggers reconnect from lastDelivered", () => 
     }).pipe(Effect.provide(EventRegistry.Live)),
   )
 })
+
+describe("CloudStore — drainBeforeSubscribe", () => {
+  it.scoped("drain emits all QueryAfter pages before Subscribe opens", () =>
+    Effect.gen(function* () {
+      const reg = yield* EventRegistry
+      const events = Array.from({ length: 100 }, (_, i) => ({
+        id: `evt-${String(i).padStart(3, "0")}`,
+        type: "x",
+        actor: "a",
+        source: "cli" as const,
+        timestamp: 0,
+        payload: {},
+      }))
+      let queryAfterCalls = 0
+      const mockClient: CloudRpcClient = {
+        Append: () => Effect.succeed([]),
+        Subscribe: () =>
+          Stream.fromIterable([
+            {
+              id: "live-1",
+              type: "x",
+              actor: "a",
+              source: "cli" as const,
+              timestamp: 0,
+              payload: {},
+            } as unknown as never,
+          ]),
+        GetById: () => Effect.die("unused"),
+        Query: () => Effect.die("unused"),
+        QueryAfter: ({ cursor }) => {
+          queryAfterCalls += 1
+          if (cursor === "earliest") return Effect.succeed(events.slice(0, 50) as never)
+          if (cursor === "evt-049") return Effect.succeed(events.slice(50) as never)
+          if (cursor === "evt-099") return Effect.succeed([])
+          return Effect.succeed([])
+        },
+      }
+      const shape = yield* makeCloudEventStore(mockClient, reg, {
+        drainBeforeSubscribe: true,
+      })
+
+      const collected = yield* Stream.runCollect(
+        shape.subscribe({ cursor: "earliest" }).pipe(Stream.take(101)),
+      )
+      const items = Chunk.toReadonlyArray(collected) as Array<{ id: string }>
+      expect(items[0]!.id).toBe("evt-000")
+      expect(items[99]!.id).toBe("evt-099")
+      expect(items[100]!.id).toBe("live-1")
+      expect(queryAfterCalls).toBe(3)
+    }).pipe(Effect.provide(EventRegistry.Live)),
+  )
+
+  it.scoped("event appended between drain-empty and Subscribe-open is delivered via Subscribe replay", () =>
+    Effect.gen(function* () {
+      const reg = yield* EventRegistry
+      const drainedEvents = [{ id: "evt-A", type: "x", actor: "a", source: "cli" as const, timestamp: 0, payload: {} }]
+      const raceEvent = { id: "evt-B", type: "x", actor: "a", source: "cli" as const, timestamp: 0, payload: {} }
+      const liveEvent = { id: "evt-C", type: "x", actor: "a", source: "cli" as const, timestamp: 0, payload: {} }
+      const mockClient: CloudRpcClient = {
+        Append: () => Effect.succeed([]),
+        Subscribe: ({ cursor }) => {
+          expect(cursor).toBe("evt-A") // resumed from last drain id
+          return Stream.fromIterable([raceEvent as unknown as never, liveEvent as unknown as never])
+        },
+        GetById: () => Effect.die("unused"),
+        Query: () => Effect.die("unused"),
+        QueryAfter: ({ cursor }) =>
+          cursor === "earliest" ? Effect.succeed(drainedEvents as never) : Effect.succeed([]),
+      }
+      const shape = yield* makeCloudEventStore(mockClient, reg, {
+        drainBeforeSubscribe: true,
+      })
+
+      const collected = yield* Stream.runCollect(
+        shape.subscribe({ cursor: "earliest" }).pipe(Stream.take(3)),
+      )
+      const items = Chunk.toReadonlyArray(collected) as Array<{ id: string }>
+      expect(items.map((i) => i.id)).toEqual(["evt-A", "evt-B", "evt-C"])
+    }).pipe(Effect.provide(EventRegistry.Live)),
+  )
+})
