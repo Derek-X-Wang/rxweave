@@ -1,6 +1,6 @@
 import { describe, expect } from "vitest"
 import { it } from "@effect/vitest"
-import { Chunk, Context, Effect, Exit, Layer, Stream } from "effect"
+import { Chunk, Context, Effect, Exit, Fiber, Layer, Stream, TestClock } from "effect"
 import { EventStore } from "@rxweave/core"
 import { EventRegistry, SystemAgentHeartbeat, defineEvent } from "@rxweave/schema"
 import { Schema } from "effect"
@@ -433,6 +433,80 @@ describe("CloudStore — per-subscriber cursor state", () => {
 
       expect(subscribeCalls[0]).toBe("cursor-A")
       expect(subscribeCalls[1]).toBe("earliest")
+    }).pipe(Effect.provide(EventRegistry.Live)),
+  )
+})
+
+describe("CloudStore — heartbeat watchdog", () => {
+  it.scoped("watchdog fires after 3 × intervalMs of silence post-heartbeat", () =>
+    Effect.gen(function* () {
+      const reg = yield* EventRegistry
+      // First subscribe call: emit one heartbeat then hang forever.
+      // Subsequent calls (retries): emit a permanent error so the retry
+      // budget is spent immediately without needing further clock advances.
+      let callCount = 0
+      const mockClient: CloudRpcClient = {
+        Append: () => Effect.succeed([]),
+        Subscribe: () => {
+          callCount++
+          if (callCount === 1) {
+            return Stream.concat(
+              Stream.fromIterable([
+                { _tag: "Heartbeat", at: 0 } as unknown as never,
+              ]),
+              Stream.never,
+            )
+          }
+          // Non-retryable permanent error on reconnect → stream fails fast.
+          return Stream.fail({ _tag: "NotFoundWireError", id: "x" })
+        },
+        GetById: () => Effect.die("unused"),
+        Query: () => Effect.die("unused"),
+        QueryAfter: () => Effect.die("unused"),
+      }
+      const shape = yield* makeCloudEventStore(mockClient, reg, {
+        heartbeat: { intervalMs: 1000 },
+      })
+      const fiber = yield* Effect.fork(
+        Stream.runCollect(shape.subscribe({ cursor: "earliest" }).pipe(Stream.take(1))),
+      )
+      // Phase 1: advance past 3 × intervalMs (3000ms) to the next 1Hz poll
+      // tick. The schedule checks at t=0, 1000, 2000, 3000, 4000ms; at
+      // 4000ms `4000 - 0 > 3000` fires WatchdogTimeout.
+      yield* TestClock.adjust("4100 millis")
+      // Phase 2: the retry schedule uses exponential backoff; advance
+      // through the first retry delay (500ms) so the retry can reconnect
+      // and hit the permanent error on the second Subscribe call.
+      yield* TestClock.adjust("1000 millis")
+      const exit = yield* Fiber.await(fiber)
+      // WatchdogTimeout fired → retry → second connect emits permanent error
+      // → stream fails (non-retryable).
+      expect(exit._tag).toBe("Failure")
+    }).pipe(Effect.provide(EventRegistry.Live)),
+  )
+
+  it.scoped("watchdog does NOT fire when no heartbeat ever observed (cloud-v0.2 path)", () =>
+    Effect.gen(function* () {
+      const reg = yield* EventRegistry
+      const mockClient: CloudRpcClient = {
+        Append: () => Effect.succeed([]),
+        Subscribe: () => Stream.never as unknown as Stream.Stream<never, never, never>,
+        GetById: () => Effect.die("unused"),
+        Query: () => Effect.die("unused"),
+        QueryAfter: () => Effect.die("unused"),
+      }
+      const shape = yield* makeCloudEventStore(mockClient, reg, {
+        heartbeat: { intervalMs: 1000 },
+      })
+      const fiber = yield* Effect.fork(
+        Stream.runCollect(shape.subscribe({ cursor: "earliest" }).pipe(Stream.take(1))),
+      )
+      yield* TestClock.adjust("60000 millis")
+      const status = yield* Fiber.status(fiber)
+      // Fiber should still be running (suspended on the never-stream)
+      // because the watchdog never armed.
+      expect(status._tag).toBe("Suspended")
+      yield* Fiber.interrupt(fiber)
     }).pipe(Effect.provide(EventRegistry.Live)),
   )
 })

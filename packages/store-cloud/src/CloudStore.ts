@@ -63,6 +63,7 @@ import {
   withRefreshOn401,
 } from "./Auth.js"
 import { isRetryable } from "./Retry.js"
+import { WatchdogTimeout } from "./Errors.js"
 
 /**
  * Created once at module scope — `Schema.is` returns a closure and
@@ -98,7 +99,7 @@ export interface CloudRpcClient {
     input: { readonly events: ReadonlyArray<EventInput>; readonly registryDigest: string },
   ) => Effect.Effect<ReadonlyArray<EventEnvelope>, unknown, never>
   readonly Subscribe: (
-    input: { readonly cursor: Cursor; readonly filter?: Filter },
+    input: { readonly cursor: Cursor; readonly filter?: Filter; readonly heartbeat?: { readonly intervalMs: number } },
   ) => Stream.Stream<EventEnvelope, unknown, never>
   readonly GetById: (input: { readonly id: EventId }) => Effect.Effect<EventEnvelope, unknown, never>
   readonly Query: (
@@ -120,6 +121,7 @@ export interface CloudRpcClient {
 export const makeCloudEventStore = (
   client: CloudRpcClient,
   registry: EventRegistry["Type"],
+  opts?: { readonly heartbeat?: { readonly intervalMs: number } },
 ): Effect.Effect<EventStoreShape, never, never> =>
   Effect.gen(function* () {
     // Tracks the id of the most recently *appended* envelope. Per the
@@ -127,6 +129,7 @@ export const makeCloudEventStore = (
     // most recent append, or 'earliest' if empty") — distinct from
     // `lastDelivered`, which is subscribe-scoped (see below).
     const lastAppended = yield* Ref.make<Cursor>("earliest")
+    const heartbeatConfig = opts?.heartbeat
 
     const shape: EventStoreShape = {
       append: (events) =>
@@ -162,6 +165,21 @@ export const makeCloudEventStore = (
             // across a reconnect.
             const lastDelivered = yield* Ref.make<Cursor>("latest")
 
+            // undefined until first heartbeat observed; the watchdog
+            // checks for non-undefined before firing.
+            const lastHeartbeatAt = yield* Ref.make<number | undefined>(undefined)
+
+            // Updates lastHeartbeatAt on every Heartbeat item using
+            // Effect.clockWith so TestClock controls the timestamp in tests.
+            const updateWatchdog = (item: unknown): Effect.Effect<void> =>
+              isHeartbeat(item)
+                ? Effect.clockWith((clock) =>
+                    clock.currentTimeMillis.pipe(
+                      Effect.flatMap((now) => Ref.set(lastHeartbeatAt, now)),
+                    ),
+                  )
+                : Effect.void
+
             // Each (re)connection re-reads `lastDelivered` so a reconnect
             // after some events were already delivered resumes from the
             // most recent one, not the original cursor. Only the
@@ -170,16 +188,20 @@ export const makeCloudEventStore = (
               const resumeFrom = yield* Ref.get(lastDelivered)
               const effectiveCursor =
                 resumeFrom === "latest" ? cursor : resumeFrom
-              return client
-                .Subscribe(
-                  filter === undefined
-                    ? { cursor: effectiveCursor }
-                    : { cursor: effectiveCursor, filter },
-                )
-                .pipe(
-                  // (1) Watchdog tap will be added BEFORE the filter in Task 9 —
-                  //     reserves position so heartbeats remain observable for it.
 
+              const subscribePayload = {
+                cursor: effectiveCursor,
+                ...(filter !== undefined ? { filter } : {}),
+                ...(heartbeatConfig !== undefined ? { heartbeat: heartbeatConfig } : {}),
+              }
+
+              const itemStream = client
+                .Subscribe(subscribePayload)
+                .pipe(
+                  // (1) Watchdog tap — BEFORE the filter so heartbeats
+                  //     (which will be filtered out next) are still seen
+                  //     here to update lastHeartbeatAt.
+                  Stream.tap(updateWatchdog),
                   // (2) Drop heartbeat sentinels from the user-facing stream.
                   //     They served their byte-flow purpose at the wire level
                   //     (and will arm the watchdog above); consumers of EventStore
@@ -199,6 +221,52 @@ export const makeCloudEventStore = (
                   //     Ref.set(lastDelivered, undefined) for every heartbeat.
                   Stream.tap((e) => Ref.set(lastDelivered, e.id)),
                 )
+
+              if (heartbeatConfig === undefined) return itemStream
+
+              // Watchdog: a 1Hz polling effect that fails with WatchdogTimeout
+              // when too much time has elapsed since the last heartbeat.
+              // Only fires when lastHeartbeatAt is non-undefined (i.e., at
+              // least one heartbeat has been observed). This guards against
+              // false positives on old servers (cloud-v0.2) that don't emit
+              // heartbeats even when the client requests them.
+              //
+              // Implementation: Effect.repeat(checkEffect, spaced(1s)) runs
+              // checkEffect on an infinite 1Hz schedule and only stops when
+              // the effect fails. Stream.fromEffect wraps it so it emits
+              // ZERO items (type never) — the stream only fails when the
+              // watchdog fires. This avoids the void-emission bug of
+              // repeatEffectWithSchedule (which would emit void as items).
+              const idleThreshold = heartbeatConfig.intervalMs * 3
+              const checkOnce: Effect.Effect<void, WatchdogTimeout> = Effect.clockWith(
+                (clock) =>
+                  clock.currentTimeMillis.pipe(
+                    Effect.flatMap((now) =>
+                      Ref.get(lastHeartbeatAt).pipe(
+                        Effect.flatMap((at) =>
+                          at !== undefined && now - at > idleThreshold
+                            ? Effect.fail(new WatchdogTimeout({ idleMs: now - at }))
+                            : Effect.void,
+                        ),
+                      ),
+                    ),
+                  ),
+              )
+              const watchdogStream: Stream.Stream<never, WatchdogTimeout, never> =
+                Stream.fromEffect(
+                  Effect.repeat(checkOnce, Schedule.spaced(Duration.seconds(1))).pipe(
+                    // Effect.repeat on an infinite schedule only stops when the
+                    // effect fails; the repeat itself succeeds with the last
+                    // value (never reached). Cast to never so the stream's
+                    // success channel stays as the expected never.
+                    Effect.flatMap(() => Effect.never as Effect.Effect<never, WatchdogTimeout>),
+                  ),
+                )
+
+              return Stream.merge(
+                itemStream,
+                watchdogStream as Stream.Stream<EventEnvelope, WatchdogTimeout, never>,
+              )
             })
 
             return Stream.unwrap(connect).pipe(
