@@ -34,6 +34,7 @@
  */
 
 import {
+  Clock,
   Duration,
   Effect,
   Layer,
@@ -54,7 +55,7 @@ import {
   QueryError,
   SubscribeError,
 } from "@rxweave/core"
-import { Heartbeat, RxWeaveRpc } from "@rxweave/protocol"
+import { Heartbeat, type HeartbeatConfig, RxWeaveRpc } from "@rxweave/protocol"
 
 import {
   cachedToken,
@@ -84,6 +85,8 @@ export interface CloudStoreOpts {
    * type is source-compatible with `() => string`.
    */
   readonly token?: TokenProvider
+  /** Optional heartbeat config forwarded to the Subscribe watchdog. */
+  readonly heartbeat?: HeartbeatConfig
 }
 
 /**
@@ -99,7 +102,7 @@ export interface CloudRpcClient {
     input: { readonly events: ReadonlyArray<EventInput>; readonly registryDigest: string },
   ) => Effect.Effect<ReadonlyArray<EventEnvelope>, unknown, never>
   readonly Subscribe: (
-    input: { readonly cursor: Cursor; readonly filter?: Filter; readonly heartbeat?: { readonly intervalMs: number } },
+    input: { readonly cursor: Cursor; readonly filter?: Filter; readonly heartbeat?: HeartbeatConfig },
   ) => Stream.Stream<EventEnvelope, unknown, never>
   readonly GetById: (input: { readonly id: EventId }) => Effect.Effect<EventEnvelope, unknown, never>
   readonly Query: (
@@ -121,7 +124,7 @@ export interface CloudRpcClient {
 export const makeCloudEventStore = (
   client: CloudRpcClient,
   registry: EventRegistry["Type"],
-  opts?: { readonly heartbeat?: { readonly intervalMs: number } },
+  opts?: { readonly heartbeat?: HeartbeatConfig },
 ): Effect.Effect<EventStoreShape, never, never> =>
   Effect.gen(function* () {
     // Tracks the id of the most recently *appended* envelope. Per the
@@ -169,14 +172,13 @@ export const makeCloudEventStore = (
             // checks for non-undefined before firing.
             const lastHeartbeatAt = yield* Ref.make<number | undefined>(undefined)
 
-            // Updates lastHeartbeatAt on every Heartbeat item using
-            // Effect.clockWith so TestClock controls the timestamp in tests.
+            // Updates lastHeartbeatAt on every Heartbeat item.
+            // Clock.currentTimeMillis is consistent with the convention used
+            // elsewhere in the repo and works identically with TestClock.
             const updateWatchdog = (item: unknown): Effect.Effect<void> =>
               isHeartbeat(item)
-                ? Effect.clockWith((clock) =>
-                    clock.currentTimeMillis.pipe(
-                      Effect.flatMap((now) => Ref.set(lastHeartbeatAt, now)),
-                    ),
+                ? Clock.currentTimeMillis.pipe(
+                    Effect.flatMap((now) => Ref.set(lastHeartbeatAt, now)),
                   )
                 : Effect.void
 
@@ -238,19 +240,16 @@ export const makeCloudEventStore = (
               // watchdog fires. This avoids the void-emission bug of
               // repeatEffectWithSchedule (which would emit void as items).
               const idleThreshold = heartbeatConfig.intervalMs * 3
-              const checkOnce: Effect.Effect<void, WatchdogTimeout> = Effect.clockWith(
-                (clock) =>
-                  clock.currentTimeMillis.pipe(
-                    Effect.flatMap((now) =>
-                      Ref.get(lastHeartbeatAt).pipe(
-                        Effect.flatMap((at) =>
-                          at !== undefined && now - at > idleThreshold
-                            ? Effect.fail(new WatchdogTimeout({ idleMs: now - at }))
-                            : Effect.void,
-                        ),
-                      ),
+              const checkOnce: Effect.Effect<void, WatchdogTimeout> = Clock.currentTimeMillis.pipe(
+                Effect.flatMap((now) =>
+                  Ref.get(lastHeartbeatAt).pipe(
+                    Effect.flatMap((at) =>
+                      at !== undefined && now - at > idleThreshold
+                        ? Effect.fail(new WatchdogTimeout({ idleMs: now - at }))
+                        : Effect.void,
                     ),
                   ),
+                ),
               )
               const watchdogStream: Stream.Stream<never, WatchdogTimeout, never> =
                 Stream.fromEffect(
@@ -361,9 +360,13 @@ export const CloudStore = {
       // structural `CloudRpcClient` surface erases those into
       // `unknown` (they're all re-mapped into `AppendError` /
       // `SubscribeError` / etc. inside `makeCloudEventStore`).
+      const cloudOpts = opts.heartbeat !== undefined
+        ? { heartbeat: opts.heartbeat }
+        : undefined
       return yield* makeCloudEventStore(
         client as unknown as CloudRpcClient,
         registry,
+        cloudOpts,
       )
     })
 
