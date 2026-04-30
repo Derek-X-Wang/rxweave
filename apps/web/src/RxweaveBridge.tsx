@@ -1,13 +1,8 @@
 import { useEffect } from "react"
-import { Cause, Effect, Layer, ManagedRuntime, Stream } from "effect"
+import { Effect, Layer, ManagedRuntime, Stream } from "effect"
 import type { Editor, TLRecord } from "tldraw"
 import { EventStore } from "@rxweave/core"
-import { RXWEAVE_RPC_PATH, SESSION_TOKEN_PATH } from "@rxweave/protocol"
-import {
-  EventRegistry,
-  type Cursor,
-  type EventEnvelope,
-} from "@rxweave/schema"
+import { EventRegistry } from "@rxweave/schema"
 import { CloudStore } from "@rxweave/store-cloud"
 import {
   CANVAS_SCHEMAS,
@@ -17,10 +12,7 @@ import {
   CanvasShapeUpserted,
 } from "../server/schemas.js"
 
-// Bidirectional adapter between tldraw's store and RxWeave's RPC
-// stream. Talks the same `@effect/rpc` protocol over NDJSON that the
-// cloud speaks, so the local loopback path and the remote path differ
-// only in `url` and `token`.
+// Bidirectional adapter between tldraw's store and RxWeave's event log.
 //
 // Outgoing — user interactions → CloudStore.append:
 //   `store.listen({source: 'user', ...})` fires only for changes the
@@ -112,45 +104,24 @@ export function RxweaveBridge({ editor }: { editor: Editor }) {
       appendEvent(event)
     }
 
-    // Bootstrap: fetch session token → build ManagedRuntime → register
-    // schemas → wire outgoing listener → fork incoming subscription.
-    // All guarded by `disposed` so React's StrictMode remount doesn't
-    // leak a dangling runtime.
+    // Bootstrap: build ManagedRuntime → register schemas → wire outgoing
+    // listener → fork incoming subscription. All guarded by `disposed`
+    // so React's StrictMode remount doesn't leak a dangling runtime.
+    //
+    // `CloudStore.LiveFromBrowser` handles the session-token fetch (with
+    // 401-retry), the RPC URL derivation, heartbeat (15 s default), and
+    // the two-phase drain (QueryAfter pages through history, then the
+    // live-tail stream opens from the last-drained cursor). Both drain
+    // and reconnect live inside the factory — the bridge no longer needs
+    // to manage cursors or retry loops.
+    //
+    // `Layer.provideMerge` composes the store layer so the output
+    // exports both `EventStore` + `EventRegistry` with zero remaining
+    // requirements — what `ManagedRuntime.make` needs. `Layer.merge`
+    // would have kept `EventRegistry` in the requirement channel.
     ;(async () => {
-      let token: string | null = null
-      try {
-        const res = await fetch(SESSION_TOKEN_PATH)
-        const body = (await res.json()) as { token: string | null }
-        token = body.token
-      } catch (err) {
-        console.warn(
-          `[web] ${SESSION_TOKEN_PATH} fetch failed; proceeding tokenless`,
-          err,
-        )
-      }
-      if (disposed) return
-
-      // `CloudStore.Live` requires `EventRegistry`; `EventRegistry.Live`
-      // also carries the registrations we do below. We want BOTH tags
-      // accessible from the runtime *and* we want the same EventRegistry
-      // instance used by CloudStore (so `Append`'s digest calc sees the
-      // registrations). `Layer.provideMerge` composes them so the
-      // output layer exports both `EventStore` + `EventRegistry` with
-      // zero remaining requirements, which is what `ManagedRuntime.make`
-      // needs. `Layer.merge` would have kept `EventRegistry` in the
-      // requirement channel.
-      //
-      // `url` must include the exact RPC mount path: `@effect/rpc`'s
-      // `layerProtocolHttp` POSTs to EXACTLY the URL passed, with no
-      // implicit append. Drifting silently routes to vite's 404 and
-      // the RPC client hangs pending forever — `RXWEAVE_RPC_PATH` is
-      // exported from `@rxweave/server` specifically to keep the two
-      // ends coupled. `token === null` ⇒ server is in no-auth mode;
-      // omit the `token` provider entirely so CloudStore's auth
-      // wiring skips the Authorization header (spec §3.3).
-      const layer = CloudStore.Live({
-        url: `${window.location.origin}${RXWEAVE_RPC_PATH}/`,
-        ...(token === null ? {} : { token: () => token }),
+      const layer = CloudStore.LiveFromBrowser({
+        origin: window.location.origin,
       }).pipe(Layer.provideMerge(EventRegistry.Live))
       runtime = ManagedRuntime.make(layer)
 
@@ -208,56 +179,23 @@ export function RxweaveBridge({ editor }: { editor: Editor }) {
         { source: "user", scope: "document" },
       )
 
-      // Incoming: two-phase (drain-then-subscribe) instead of a single
-      // `subscribe({ cursor: "earliest" })` stream.
-      //
-      // Why two-phase: WebKit's `fetch` streaming reader buffers
-      // aggressively — after a large replay burst flushes, subsequent
-      // trickle events (one shape-upsert every few seconds) never reach
-      // the reader because the internal buffer never fills enough to
-      // trigger another flush. Bun, Node's fetch, and Chrome-family
-      // browsers don't exhibit this; Safari/WebKit/cmux-WKWebView does.
-      //
-      // Sidestep: paginated `queryAfter` draws the history via ordinary
-      // request-response HTTP (no long-lived stream, no WebKit buffer
-      // trap), then open a fresh subscribe stream from the last-drained
-      // cursor — its replay side is empty, so the stream starts
-      // delivering live events immediately and no reply-burst/flush
-      // race exists.
-      //
-      // No gap: `queryAfter(cursor, ...)` is cursor-exclusive and
-      // `subscribe({ cursor })` is also cursor-exclusive, so an event
-      // appended between the last page and the subscribe opening is
-      // either in the next page (if we query again) or delivered by
-      // subscribe (if it landed after our snapshot) — never both, never
-      // missed. We pin `liveCursor` to the latest drained id before
-      // opening subscribe.
-      const PAGE_SIZE = 500
+      // Incoming: `store.subscribe({ cursor: "earliest" })` — the factory's
+      // built-in drainBeforeSubscribe option pages through history via
+      // QueryAfter before opening the live tail, so the stream delivers
+      // fully ordered events without the WebKit fetch-buffer stall.
+      // Reconnect on transient errors is also handled inside the factory
+      // via Stream.retry with exponential backoff.
       runtime.runFork(
         Effect.gen(function* () {
           const store = yield* EventStore
-          let liveCursor: Cursor = "earliest"
-          while (true) {
-            const batch: ReadonlyArray<EventEnvelope> = yield* store.queryAfter(
-              liveCursor,
-              {},
-              PAGE_SIZE,
-            )
-            applyIncomingBatch(editor, batch)
-            // Advance the cursor even on a short final page — otherwise
-            // subscribe starts from an older `liveCursor` and re-delivers
-            // what we just applied.
-            if (batch.length > 0) liveCursor = batch[batch.length - 1]!.id
-            if (batch.length < PAGE_SIZE) break
-          }
           yield* Stream.runForEach(
-            store.subscribe({ cursor: liveCursor }),
+            store.subscribe({ cursor: "earliest" }),
             (event) => Effect.sync(() => applyIncoming(editor, event)),
           )
         }).pipe(
           Effect.tapErrorCause((cause) =>
             Effect.sync(() =>
-              console.warn("[web] subscribe cause:\n" + Cause.pretty(cause)),
+              console.warn("[web] subscribe error:", cause),
             ),
           ),
         ),
@@ -341,43 +279,3 @@ function applyIncoming(
   }
 }
 
-// Batched apply for the initial drain — 500 events → 1 tldraw
-// `mergeRemoteChanges` transaction instead of 500, so listeners/
-// history/undo bookkeeping fires once per page. On a cold load that
-// collapses hundreds of separate transactions to one per page.
-//
-// Must iterate events IN ORDER and apply put/remove in original
-// sequence. Grouping all puts before all removes (or vice versa)
-// silently breaks `[delete A, upsert A]` semantics — common on
-// undo/redo — because the grouped form would apply the put and
-// then remove it.
-//
-// `put([record])` / `remove([id])` inside one `mergeRemoteChanges`
-// are cheap — they mutate tldraw's internal change set, which is
-// flushed once at transaction end. The saved cost was the per-event
-// transaction fanout, not the array-packing.
-//
-// Per-record try/catch fallback preserves the single-bad-row skip
-// behavior: if any record in the page fails tldraw validation the
-// whole transaction rolls back, and we re-apply each event through
-// `applyIncoming` (which skips offenders individually).
-function applyIncomingBatch(
-  editor: Editor,
-  events: ReadonlyArray<EventEnvelope>,
-) {
-  if (events.length === 0) return
-  try {
-    editor.store.mergeRemoteChanges(() => {
-      for (const ev of events) {
-        const p = ev.payload as { record?: TLRecord; id?: string }
-        if (UPSERTED_TYPES.has(ev.type) && p.record) {
-          editor.store.put([p.record])
-        } else if (DELETED_TYPES.has(ev.type) && p.id) {
-          editor.store.remove([p.id as TLRecord["id"]])
-        }
-      }
-    })
-  } catch {
-    for (const ev of events) applyIncoming(editor, ev)
-  }
-}
