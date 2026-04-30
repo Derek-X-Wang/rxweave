@@ -1,7 +1,7 @@
 # RxWeave — Handoff
 
-**Last updated:** 2026-04-23 after v0.4.1 ship.
-**Integration state:** 31 server tests + 22 turbo tasks green at 0.4.1. All 11 `@rxweave/*` packages on npm, installable from a fresh dir (smoke-verified).
+**Last updated:** 2026-04-29 after v0.5.0 ship.
+**Integration state:** 226 tests (11 packages) + 12 conformance passing at 0.5.0-pre. All 11 `@rxweave/*` packages on npm at 0.4.1; v0.5.0 publish pending user 2FA.
 **Read this first** if you're resuming work on RxWeave — in a fresh Claude Code session, from a different machine, or as a new contributor.
 
 ---
@@ -17,8 +17,9 @@
 | `v0.3.0` | `@rxweave/llm` — LLM-backed agents via Vercel AI SDK. Publishing infra: changesets, LICENSE, npm metadata, `workspace:^` refs | 2026-04-19 |
 | `v0.4.0` | CLI + unified stream server: `@rxweave/server` (embeddable HTTP RPC over NDJSON, same wire as cloud), shared protocol handlers, `rxweave serve / import / cursor`, `stream --count|--last|--fold`, `agent run`→`exec`, `apps/canvas`→`apps/web` with embedded-server bridge, cookbooks, reliability tests. **Broken on npm** — see "Release pipeline gotchas" below. | 2026-04-22 |
 | `v0.4.1` | Publish-pipeline fix: rewrite `"workspace:^"` → `"^<version>"` before `changeset publish`. Same code as 0.4.0, actually installable. | 2026-04-23 |
+| `v0.5.0` | Browser streaming: protocol-level heartbeat sentinel (`Heartbeat` variant in Subscribe response union), `CloudStore.LiveFromBrowser({ origin, tokenPath?, heartbeat? })`, `drainBeforeSubscribe` via QueryAfter pagination, per-fiber liveness watchdog with first-heartbeat arming + reconnect from last-delivered cursor. `EventRegistry.registerAll(defs, { swallowDuplicates })` helper. `mkdirSync` folded into `generateAndPersistToken`. `apps/web` canvas schemas relocated from `server/` to `src/shared/`. WebKit fetch-buffer fix end-to-end (Safari works). | 2026-04-29 |
 
-**v0.4.1 is the recommended install target.** All prior versions shipped with `workspace:^` in their `dependencies` (broken on `bun add @rxweave/cli` in a fresh dir). Deprecation via `npm deprecate` across 0.1.0 – 0.4.0 is the one remaining post-ship step that needs the user's 2FA.
+**v0.4.1 is the current npm install target** (v0.5.0 publish pending user 2FA — see "Immediate pending" below). All prior versions v0.1.0–v0.4.0 shipped with `workspace:^` in their `dependencies` (broken on `bun add @rxweave/cli` in a fresh dir). Deprecation via `npm deprecate` across 0.1.0–0.4.0 still needs the user's 2FA.
 
 ## Key design decisions (locked; do not relitigate without cause)
 
@@ -46,49 +47,52 @@ These are the eight architectural calls that shape the whole project. All are in
 - ESM-only — no CJS, no dual builds
 - `@noble/hashes` for V8-isolate-safe sha256 (schema is portable across Node/Bun/browsers/Convex)
 
-## Sub-project status (all at v0.4.1)
+## Sub-project status (all at v0.5.0-pre / 0.4.1 on npm)
 
 | Package | Tests | Notes |
 |---|---|---|
-| `@rxweave/schema` | ✓ | `EventInput` wire-safe Struct, `EventEnvelope` Class. ActorId regex (`^[a-zA-Z0-9_.-]+(:[a-zA-Z0-9_.-]+)?$`), digest memoized, canvas `defineEvent` schemas registered by both bridge + server for digest-parity. |
-| `@rxweave/core` | ✓ conformance harness (10 cases) | `EventStore` tag; `queryAfter` for exclusive-cursor paging. |
+| `@rxweave/schema` | 40 (5 files) | `EventInput` wire-safe Struct, `EventEnvelope` Class. ActorId regex, digest memoized, `registerAll(defs, { swallowDuplicates })` helper for batch registration with digest-aware duplicate handling. |
+| `@rxweave/core` | 1 + 10 conformance | `EventStore` tag; `queryAfter` for exclusive-cursor paging. |
 | `@rxweave/store-memory` | 12 | `PubSub.sliding(1024)` fan-out; snapshot-then-live under `Semaphore(1)`. |
 | `@rxweave/store-file` | 16 | JSONL + fsync + cold-start recovery (truncate torn tail, skip interior corruption). |
-| `@rxweave/store-cloud` | 22 + 1 skipped integration | Bearer token optional (embedded no-auth path); NDJSON over `@effect/rpc`; retry classification; polling-safe Subscribe. |
+| `@rxweave/store-cloud` | 40 + 1 skipped integration | `CloudStore.Live` + `CloudStore.LiveFromBrowser({ origin, tokenPath?, heartbeat? })`: session-token bootstrap, QueryAfter drain, heartbeat sentinel (15s default), per-fiber watchdog (first-heartbeat arm + reconnect from lastDelivered). |
 | `@rxweave/reactive` | 3 | `whereType`, `byActor`, `bySource`, `withinWindow`, `decodeAs`. |
 | `@rxweave/runtime` | 12 | `defineAgent`, `supervise` (`FiberMap`), `AgentCursorStore.Memory` + `.File` (fsync per `set()`), `withIdempotence`. |
 | `@rxweave/llm` | 4 | `defineLlmAgent` wraps `defineAgent`. `tool()` helper → Schema → JSON Schema. Vercel AI SDK backend; tools return `EventInput[]`; multi-step via `stepCountIs`. |
-| `@rxweave/protocol` | 12 | `RxWeaveRpc` RpcGroup; shared handlers (`appendHandler`, `subscribeHandler`, `getByIdHandler`, `queryHandler`, `queryAfterHandler`, `registrySyncDiffHandler`, `registryPushHandler`); `Paths` (`RXWEAVE_RPC_PATH`, `SESSION_TOKEN_PATH`). |
-| `@rxweave/server` | 19 bun + 12 conformance | Embeddable HTTP NDJSON server on Bun. Ephemeral `rxk_<hex>` token at `.rxweave/serve.token` (0600). `/rxweave/session-token` loopback bootstrap. `--host 0.0.0.0 --no-auth` interlock. |
-| `@rxweave/cli` | 35 | `init`, `serve`, `dev`, `emit`, `import`, `stream`, `get`, `inspect`, `cursor`, `schema`, `agent`. BunRuntime.runMain entry. |
+| `@rxweave/protocol` | 28 | `RxWeaveRpc` RpcGroup; shared handlers including `subscribeHandler` (heartbeat injection via `intervalMs`); `Heartbeat` sentinel in Subscribe response union; `Paths`. |
+| `@rxweave/server` | 21 bun + 12 conformance | Embeddable HTTP NDJSON server on Bun. Ephemeral `rxk_<hex>` token at `.rxweave/serve.token` (0600). `mkdirSync` now in `generateAndPersistToken`. `/rxweave/session-token` loopback bootstrap. `--host 0.0.0.0 --no-auth` interlock. |
+| `@rxweave/cli` | 36 | `init`, `serve`, `dev`, `emit`, `import`, `stream`, `get`, `inspect`, `cursor`, `schema`, `agent`. BunRuntime.runMain entry. |
 
 Workspace apps (private, not published):
-- `apps/web/` (formerly `apps/canvas/`) — the canvas demo. Embeds `@rxweave/server`; browser bridge runs `@rxweave/store-cloud` over NDJSON RPC. Bundle 658.9 KB gzip.
+- `apps/web/` (formerly `apps/canvas/`) — the canvas demo. Embeds `@rxweave/server`; browser bridge runs `CloudStore.LiveFromBrowser`. Schemas relocated to `src/shared/`. Bundle 658.2 KB gzip.
 - `apps/dev/` — agent playground, LLM agent demo at `apps/dev/agents/llm-task-from-speech.ts`.
 
 ## Immediate pending (carry into the next session)
 
-1. **Run `npm deprecate` loop** to mark v0.1.0 – v0.4.0 as broken with a pointer at 0.4.1+. Requires 2FA per package. CHANGELOG v0.4.1 already promises this; just needs the commands executed:
+1. **npm publish v0.5.0** — user runs `bunx changeset version` (auto-commits version bumps + CHANGELOG), then `bunx changeset publish` (requires 2FA per package). The changeset file `.changeset/v0-5-0-browser-streaming.md` is in place.
+
+2. **Manual Safari smoke** — open `apps/web` canvas in Safari/WebKit, verify live events arrive sub-second after a subscribe replay burst. This is the end-to-end validation of the WebKit fix; automated tests cover the protocol layer but not the browser runtime.
+
+3. **cloud-v0.3 adoption** — the heartbeat sentinel is implemented on the rxweave side; cloud-v0.2 servers tolerate unknown schema keys (degrades cleanly), but WebKit users on cloud-v0.2 still hit the fetch-buffer stall. Full fix requires a cross-repo cloud-v0.3 PR. Separate follow-up.
+
+4. **Run `npm deprecate` loop** — mark v0.1.0–v0.4.0 as broken with a pointer at 0.4.1+. Requires 2FA per package:
     ```bash
     for pkg in cli core llm protocol reactive runtime schema server store-cloud store-file store-memory; do
       npm deprecate "@rxweave/$pkg@<=0.4.0" "workspace:^ refs shipped verbatim; use 0.4.1+"
     done
     ```
-    (`@rxweave/server`'s only old version is 0.4.0 — the manual-bootstrap publish I did before TP took over. That one was actually built correctly because I rebuilt dist locally, but deprecating it keeps the "only 0.4.1+" message consistent.)
 
-2. **Fix the stale `rxweave 0.1.0` string** in the CLI's `--help` banner. Hardcoded constant, not tracking the actual package version. Spotted during the v0.4.1 smoke test. Small fix, probably in `packages/cli/src/bin/rxweave.ts` or similar.
+5. **Add a post-publish smoke test** to `.github/workflows/release.yml`: after `bunx changeset publish`, spin up a fresh `/tmp` dir, `bun add @rxweave/cli@<new-version>`, and run `bunx rxweave serve --help`. Catches the next `workspace:^`-class regression in CI. 10-line addition.
 
-3. **Add a post-publish smoke test** to `.github/workflows/release.yml`: after `bunx changeset publish`, spin up a fresh `/tmp` dir, `bun add @rxweave/cli@<new-version>`, and run `bunx rxweave serve --help`. Catches the next `workspace:^`-class regression in CI instead of by users. 10-line addition.
+## Shipped in v0.5.0 (formerly "Deferred follow-ups")
 
-## Deferred follow-ups (v0.5 / Phase I candidates)
+These items were listed as "Deferred follow-ups" for v0.5.0 in the prior HANDOFF. All shipped:
 
-Explicitly named in Phase F, G, H CHANGELOG entries as "deferred." In rough priority order:
-
-1. **Server-side NDJSON heartbeat** on the `Subscribe` response so WebKit's `fetch` reader receives sustained live events after a large replay burst. Today the `apps/web` bridge's two-phase drain handles refresh-state + the FIRST live event, but subsequent trickle events stay stuck in WebKit's fetch buffer. Bun, Node, and Chrome-family browsers aren't affected. **Protocol-level change** — needs `Subscribe`'s `success` schema widened to accept either `EventEnvelope` or a sentinel, plus client-side filter. Medium effort.
-2. **`EventRegistry.registerAll(defs)` helper** — 4 sites (`apps/web` server + bridge, `packages/cli/src/commands/dev.ts`, `packages/cli/src/Setup.ts`) each hand-roll `for (const def of schemas) yield* reg.register(def)`. Single helper in `packages/schema/src/Registry.ts`, optional `swallowDuplicates` flag for the browser-remount case. Small.
-3. **Fold `mkdirSync(dirname(tokenFile), { recursive: true })` into `generateAndPersistToken`** — CLI `serve.ts` and `apps/web/server/server.ts` both hand-roll the parent-dir pre-step. Move into `packages/server/src/Auth.ts`, callers drop the boilerplate. Small.
-4. **`CloudStore.LiveFromBrowser({ origin, tokenPath })`** + reusable drain-then-subscribe helper in `@rxweave/store-cloud`. Moves the WebKit workaround from `apps/web/src/RxweaveBridge.tsx` into the reusable library. Ships after #1 (the heartbeat) for complete browser story. Medium.
-5. **Move canvas schemas out of `apps/web/server/`** — the bridge imports `../server/schemas.js`, crossing the browser/server source boundary. Cosmetic; relocate into `apps/web/src/shared/` or similar. Trivial.
+1. **Server-side NDJSON heartbeat** — `Heartbeat` sentinel in Subscribe response union; `subscribeHandler` injects at configurable `intervalMs`; `CloudStore.Live` and `LiveFromBrowser` filter sentinels before user-facing stream.
+2. **`EventRegistry.registerAll(defs, { swallowDuplicates })`** — helper in `packages/schema/src/Registry.ts`; all four hand-rolled loop sites converted.
+3. **`mkdirSync` folded into `generateAndPersistToken`** — callers in CLI `serve.ts` and `apps/web/server/server.ts` drop the boilerplate pre-step.
+4. **`CloudStore.LiveFromBrowser`** — reusable drain-then-subscribe-with-watchdog factory in `@rxweave/store-cloud`; `apps/web` bridge converted.
+5. **Canvas schemas relocated** — moved from `apps/web/server/` to `apps/web/src/shared/`, removing the browser/server source boundary crossing.
 
 ## Release pipeline — gotchas (hard-won)
 
@@ -169,7 +173,9 @@ The `--dangerously-skip-permissions` preference is saved in memory — always in
 ## References
 
 - Design spec: `docs/superpowers/specs/2026-04-18-rxweave-design.md`
-- v0.4 implementation plan (mostly executed, Phase H done): `docs/superpowers/plans/2026-04-20-cli-agent-collaboration-plan.md`
+- Browser streaming spec: `docs/superpowers/specs/2026-04-25-browser-streaming-design.md`
+- v0.5 implementation plan: `docs/superpowers/plans/2026-04-25-browser-streaming-plan.md`
+- v0.4 implementation plan (fully executed): `docs/superpowers/plans/2026-04-20-cli-agent-collaboration-plan.md`
 - v0.1 local stack plan: `docs/superpowers/plans/2026-04-18-rxweave-v01-local-stack.md`
 - Cloud plan: `docs/superpowers/plans/2026-04-18-cloud-v01-and-store-cloud.md`
 - CHANGELOG: `CHANGELOG.md` (every version from v0.1.0 onwards)
