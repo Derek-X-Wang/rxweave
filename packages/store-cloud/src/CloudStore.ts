@@ -207,18 +207,40 @@ export const makeCloudEventStore = (
                   //     (which will be filtered out next) are still seen
                   //     here to update lastHeartbeatAt.
                   Stream.tap(updateWatchdog),
-                  // (2) Drop heartbeat sentinels from the user-facing stream.
-                  //     They served their byte-flow purpose at the wire level
-                  //     (and will arm the watchdog above); consumers of EventStore
-                  //     should only see EventEnvelopes.
-                  Stream.filterMap((item) => {
-                    if (isHeartbeat(item)) return Option.none()
-                    // Cast remains because TS does not narrow
-                    // Heartbeat | EventEnvelope through a fresh-variable
-                    // predicate; the union exhaustiveness is enforced by
-                    // the Subscribe success schema, not by structural
-                    // inference here.
-                    return Option.some(item as EventEnvelope)
+                  // (2) Drop heartbeat sentinels and surface unknown sentinels
+                  //     as stream failures.
+                  //
+                  //     Forward-compat contract: a future-version sentinel with
+                  //     an unknown _tag (e.g. a v0.6 ProgressMarker arriving at
+                  //     a v0.5 client) must NOT be silently dropped or forwarded
+                  //     as a malformed EventEnvelope. We gate on the presence of
+                  //     a string `id` field — the invariant all EventEnvelopes
+                  //     satisfy — and fail the stream for anything that passes
+                  //     neither the Heartbeat check nor the id check.
+                  //
+                  //     This keeps the subscribe stream honest: callers only see
+                  //     well-formed envelopes, and a version skew surfaces as an
+                  //     explicit error rather than a corrupted cursor or a phantom
+                  //     item in the output. If a future v0.6 needs to handle
+                  //     unknown sentinels gracefully, the regression test
+                  //     "future-sentinel decode failure" will catch any weakening
+                  //     of this contract and force an explicit forward-compat
+                  //     policy.
+                  Stream.flatMap((item) => {
+                    if (isHeartbeat(item)) return Stream.empty
+                    const asAny = item as { id?: unknown }
+                    if (typeof asAny.id === "string") {
+                      return Stream.make(item as EventEnvelope)
+                    }
+                    // Unknown sentinel — not a Heartbeat and has no `id`.
+                    // Fail the stream so version skew surfaces explicitly
+                    // rather than corrupting the cursor or emitting garbage.
+                    const tag = (item as { _tag?: unknown })._tag
+                    return Stream.fail(
+                      new SubscribeError({
+                        reason: `unknown-sentinel:${typeof tag === "string" ? tag : "unknown"}`,
+                      }),
+                    )
                   }),
                   // (3) Cursor tap runs AFTER the filter so it only sees envelopes
                   //     with valid `id` fields. Pre-v0.5 this tap was at the head

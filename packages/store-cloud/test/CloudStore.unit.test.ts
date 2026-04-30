@@ -745,6 +745,37 @@ describe("CloudStore — drainBeforeSubscribe", () => {
   )
 })
 
+describe("CloudStore — future-sentinel decode failure", () => {
+  it.effect("an unknown _tag (e.g. ProgressMarker) surfaces as a decode error, not silently dropped", () =>
+    Effect.gen(function* () {
+      const reg = yield* EventRegistry
+      // The mock emits a sentinel with a tag the schema doesn't know.
+      // makeCloudEventStore receives unknown items; the user-facing
+      // stream should fail/die rather than silently swallow.
+      const mockClient: CloudRpcClient = {
+        Append: () => Effect.succeed([]),
+        Subscribe: () =>
+          Stream.fromIterable([
+            { _tag: "ProgressMarker", at: 0 } as unknown as never,
+          ]),
+        GetById: () => Effect.die("unused"),
+        Query: () => Effect.die("unused"),
+        QueryAfter: () => Effect.die("unused"),
+      }
+      const shape = yield* makeCloudEventStore(mockClient, reg)
+
+      // Result should be a Left (Stream failure) — the cursor tap
+      // crashes on the missing id field, OR the filter explicitly
+      // surfaces the unknown tag as an error. Acceptable: anything
+      // that's NOT silent success.
+      const result = yield* Stream.runCollect(
+        shape.subscribe({ cursor: "earliest" }).pipe(Stream.take(1)),
+      ).pipe(Effect.either)
+      expect(result._tag).toBe("Left")
+    }).pipe(Effect.provide(EventRegistry.Live)),
+  )
+})
+
 // Helper to install a mock global fetch and return a restore function.
 function installMockFetch(
   handler: (req: Request) => Promise<Response>,
