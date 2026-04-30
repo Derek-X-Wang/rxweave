@@ -356,10 +356,10 @@ export const makeCloudEventStore = (
  * `CloudStore.LiveFromBrowser`) with their respective per-auth-mode
  * `transformClient` functions.
  *
- * `drainBeforeSubscribe` is accepted in the config type now so that
- * Task 13 can plumb it through to `makeCloudEventStore` without
- * changing this signature. For now it is received but not forwarded —
- * `makeCloudEventStore` doesn't yet read the field.
+ * Both `heartbeat` and `drainBeforeSubscribe` are forwarded to
+ * `makeCloudEventStore`. CLI/Node consumers leave both as undefined;
+ * browser consumers (LiveFromBrowser) set `drainBeforeSubscribe: true`
+ * to page through history via QueryAfter before opening the live tail.
  */
 const makeLive = (config: {
   readonly url: string
