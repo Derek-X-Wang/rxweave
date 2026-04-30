@@ -1,6 +1,6 @@
 {
   "name": "@rxweave/llm",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "LLM-backed agents for RxWeave via Vercel AI SDK — tool calling, Effect Schema args, event emission.",
   "keywords": [
     "effect",

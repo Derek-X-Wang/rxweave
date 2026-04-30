@@ -1,6 +1,6 @@
 {
   "name": "@rxweave/protocol",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "@effect/rpc group shared by RxWeave client adapters and RxWeave Cloud server.",
   "keywords": [
     "effect",

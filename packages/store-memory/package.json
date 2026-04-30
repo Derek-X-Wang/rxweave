@@ -1,6 +1,6 @@
 {
   "name": "@rxweave/store-memory",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "In-memory EventStore adapter for RxWeave — PubSub fan-out, for tests and ephemeral local runs.",
   "keywords": [
     "effect",

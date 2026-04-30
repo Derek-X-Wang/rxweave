@@ -1,7 +1,7 @@
 {
   "name": "@rxweave/app",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.5.0",
   "type": "module",
   "scripts": {
     "dev": "concurrently -n server,web -c cyan,magenta \"bun run dev:server\" \"bun run dev:web\"",
