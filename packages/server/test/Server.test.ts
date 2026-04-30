@@ -79,7 +79,7 @@ test("Subscribe with heartbeat: server emits Heartbeat sentinel as Chunk frame o
       // when the body is fully received. Without it, request.text() blocks
       // indefinitely waiting for EOF on the chunked-transfer body stream.
       const bodyBytes = new TextEncoder().encode(body)
-      const response = yield* Effect.tryPromise(() =>
+      const response = yield* Effect.promise(() =>
         fetch(url, {
           method: "POST",
           body,
@@ -102,7 +102,7 @@ test("Subscribe with heartbeat: server emits Heartbeat sentinel as Chunk frame o
       const deadline = Date.now() + 2500
 
       outer: while (Date.now() < deadline) {
-        const { done, value } = yield* Effect.tryPromise(() => reader.read())
+        const { done, value } = yield* Effect.promise(() => reader.read())
         if (done) break
         lineBuffer += decoder.decode(value, { stream: true })
         // NDJSON: each complete JSON object is terminated by "\n"
@@ -112,7 +112,13 @@ test("Subscribe with heartbeat: server emits Heartbeat sentinel as Chunk frame o
         for (const line of lines) {
           const trimmed = line.trim()
           if (trimmed.length === 0) continue
-          frames.push(JSON.parse(trimmed))
+          let parsed: unknown
+          try {
+            parsed = JSON.parse(trimmed)
+          } catch {
+            throw new Error(`NDJSON frame was not valid JSON: ${trimmed}`)
+          }
+          frames.push(parsed)
           // Short-circuit as soon as we find what we're looking for
           const lastFrame = frames[frames.length - 1] as {
             _tag?: string
@@ -128,7 +134,7 @@ test("Subscribe with heartbeat: server emits Heartbeat sentinel as Chunk frame o
         }
       }
 
-      yield* Effect.tryPromise(() => reader.cancel())
+      yield* Effect.promise(() => reader.cancel())
 
       // Assert: at least one Chunk frame carries a Heartbeat sentinel.
       const sawHeartbeat = frames.some((frame) => {
