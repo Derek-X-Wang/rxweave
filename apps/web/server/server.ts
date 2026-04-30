@@ -1,5 +1,3 @@
-import { mkdirSync } from "node:fs"
-import { dirname } from "node:path"
 import { BunRuntime } from "@effect/platform-bun"
 import { Cause, Effect, Layer } from "effect"
 import { EventStore } from "@rxweave/core"
@@ -25,13 +23,6 @@ const suggesterDisabled =
   process.env.SUGGESTER_DISABLED === "true"
 const hasKey =
   !!process.env.OPENROUTER_API_KEY || !!process.env.ANTHROPIC_API_KEY
-
-// `generateAndPersistToken` uses `writeFileSync` and does NOT create
-// parent directories. Create `.rxweave/` up front so the token write
-// has somewhere to land (recursive: true is a no-op if it already
-// exists). See `@rxweave/server` Auth.ts for the rationale on mode +
-// chmod best-effort.
-mkdirSync(dirname(TOKEN_PATH), { recursive: true })
 
 const AppLive = Layer.mergeAll(
   FileStore.Live({ path: STORE_PATH }),

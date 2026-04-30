@@ -1,9 +1,25 @@
-import { describe, expect, it } from "bun:test"
-import { existsSync, readFileSync, rmSync, statSync } from "node:fs"
+import { describe, expect, it, test } from "bun:test"
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Effect } from "effect"
 import { generateAndPersistToken, generateToken, verifyToken } from "../src/Auth.js"
+
+test("generateAndPersistToken creates the parent directory if missing", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "rxweave-auth-"))
+  try {
+    const tokenFile = join(tmp, "nested", "subdir", "serve.token")
+    expect(existsSync(join(tmp, "nested"))).toBe(false)
+
+    const token = await Effect.runPromise(generateAndPersistToken({ tokenFile }))
+
+    expect(existsSync(tokenFile)).toBe(true)
+    expect(readFileSync(tokenFile, "utf8").trim()).toBe(token)
+    expect(token.startsWith("rxk_")).toBe(true)
+  } finally {
+    rmSync(tmp, { recursive: true, force: true })
+  }
+})
 
 /**
  * Pure unit tests for the Auth primitives. These run on `bun:test`

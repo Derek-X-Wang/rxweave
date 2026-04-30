@@ -1,7 +1,5 @@
 import { Command, Options } from "@effect/cli"
 import { Effect, Layer, Option } from "effect"
-import { mkdirSync } from "node:fs"
-import { dirname } from "node:path"
 import type { EventStore } from "@rxweave/core"
 import { EventRegistry } from "@rxweave/schema"
 import { generateAndPersistToken, startServer } from "@rxweave/server"
@@ -97,20 +95,7 @@ export const serveCommand = Command.make(
         bearer = [fixedToken.value]
         yield* out.writeLine(`[rxweave] export RXWEAVE_TOKEN=${fixedToken.value}`)
       } else {
-        // `generateAndPersistToken` uses `writeFileSync` which does
-        // not create parent directories — `./.rxweave/` may not exist
-        // when the user ran `serve` without `init` first, and it is
-        // definitely absent under `--store memory`. Create it up front
-        // (recursive: true is a no-op if it already exists) so the
-        // token write has somewhere to land. The filename itself is a
-        // fixed contract because embedded clients (spec §3.3) read
-        // from the same path to avoid having to be told where the
-        // token lives. See Auth.ts for the rationale on mode + chmod
-        // best-effort.
         const tokenFile = "./.rxweave/serve.token"
-        yield* Effect.sync(() =>
-          mkdirSync(dirname(tokenFile), { recursive: true }),
-        )
         const token = yield* generateAndPersistToken({ tokenFile })
         bearer = [token]
         yield* out.writeLine(`[rxweave] export RXWEAVE_TOKEN=${token}`)

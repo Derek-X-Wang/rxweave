@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto"
-import { chmodSync, writeFileSync } from "node:fs"
+import { chmodSync, mkdirSync, writeFileSync } from "node:fs"
+import { dirname } from "node:path"
 import { Effect } from "effect"
 
 /**
@@ -37,6 +38,9 @@ export const generateAndPersistToken = (opts: {
 }): Effect.Effect<string> =>
   Effect.sync(() => {
     const token = generateToken()
+    // Ensure the parent directory exists. Synchronous to match the
+    // surrounding Effect.sync body (writeFileSync below is also sync).
+    mkdirSync(dirname(opts.tokenFile), { recursive: true })
     // Pass `mode: 0o600` to writeFileSync so the file is created with
     // tight perms atomically — no TOCTOU window between create (at
     // umask-default 0644) and the chmod tightening below. The explicit
