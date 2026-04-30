@@ -13,16 +13,17 @@
  * `HttpClient.make` that records the request it received, so we can
  * assert on headers without standing up a real HTTP server.
  */
-import { describe, expect } from "vitest"
+import { describe, expect, test } from "vitest"
 import { it } from "@effect/vitest"
-import { Effect } from "effect"
+import { Effect, Exit } from "effect"
 import {
+  FetchHttpClient,
   Headers,
   HttpClient,
   HttpClientRequest,
   HttpClientResponse,
 } from "@effect/platform"
-import { withBearerToken } from "../src/Auth.js"
+import { withBearerToken, sessionTokenFetch } from "../src/Auth.js"
 
 /**
  * Build a stub HttpClient that records every incoming request into the
@@ -142,4 +143,100 @@ describe("withBearerToken", () => {
       if (custom._tag === "Some") expect(custom.value).toBe("hello")
     }),
   )
+})
+
+const installMockFetch = (handler: (req: Request) => Promise<Response>): void => {
+  globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+    const req = input instanceof Request ? input : new Request(input as string, init)
+    return handler(req)
+  }) as typeof fetch
+}
+
+const runRpcCall = (transform: ReturnType<typeof sessionTokenFetch>["transformClient"]) =>
+  Effect.gen(function* () {
+    const baseClient = yield* HttpClient.HttpClient
+    const wrapped = transform(baseClient)
+    const req = HttpClientRequest.post("http://test/rxweave/rpc/")
+    return yield* wrapped.execute(req)
+  }).pipe(Effect.provide(FetchHttpClient.layer))
+
+describe("sessionTokenFetch", () => {
+  test("attaches bearer from token endpoint to subsequent RPC", async () => {
+    let tokenCalls = 0
+    let lastAuth: string | undefined
+    installMockFetch(async (req) => {
+      if (req.url.endsWith("/rxweave/session-token")) {
+        tokenCalls += 1
+        return new Response("rxk_test_abc123\n", { status: 200 })
+      }
+      lastAuth = req.headers.get("authorization") ?? undefined
+      return new Response("ok", { status: 200 })
+    })
+
+    const { transformClient } = sessionTokenFetch({
+      origin: "http://test",
+      tokenPath: "/rxweave/session-token",
+    })
+    const exit = await Effect.runPromiseExit(runRpcCall(transformClient))
+
+    expect(Exit.isSuccess(exit)).toBe(true)
+    expect(tokenCalls).toBe(1)
+    expect(lastAuth).toBe("Bearer rxk_test_abc123")
+  })
+
+  test("on 401, refetches the token AND retries the failed request once", async () => {
+    let tokenCalls = 0
+    let rpcCalls = 0
+    let firstRpcAuth: string | undefined
+    let secondRpcAuth: string | undefined
+    installMockFetch(async (req) => {
+      if (req.url.endsWith("/rxweave/session-token")) {
+        tokenCalls += 1
+        return new Response(tokenCalls === 1 ? "rxk_old\n" : "rxk_new\n", { status: 200 })
+      }
+      const auth = req.headers.get("authorization") ?? undefined
+      rpcCalls += 1
+      if (rpcCalls === 1) {
+        firstRpcAuth = auth
+        return new Response("expired", { status: 401 })
+      }
+      secondRpcAuth = auth
+      return new Response("ok", { status: 200 })
+    })
+
+    const { transformClient } = sessionTokenFetch({
+      origin: "http://test",
+      tokenPath: "/rxweave/session-token",
+    })
+    const exit = await Effect.runPromiseExit(runRpcCall(transformClient))
+
+    expect(Exit.isSuccess(exit)).toBe(true)
+    expect(tokenCalls).toBe(2)
+    expect(rpcCalls).toBe(2)
+    expect(firstRpcAuth).toBe("Bearer rxk_old")
+    expect(secondRpcAuth).toBe("Bearer rxk_new")
+  })
+
+  test("two consecutive 401s raise AuthFailed", async () => {
+    installMockFetch(async (req) => {
+      if (req.url.endsWith("/rxweave/session-token")) {
+        return new Response("rxk_anything\n", { status: 200 })
+      }
+      return new Response("expired", { status: 401 })
+    })
+
+    const { transformClient } = sessionTokenFetch({
+      origin: "http://test",
+      tokenPath: "/rxweave/session-token",
+    })
+    const exit = await Effect.runPromiseExit(runRpcCall(transformClient))
+
+    expect(Exit.isFailure(exit)).toBe(true)
+    if (Exit.isFailure(exit)) {
+      const failure = Exit.causeOption(exit)
+      // Walk the cause to find an AuthFailed tagged error.
+      const sawAuthFailed = JSON.stringify(failure).includes("AuthFailed")
+      expect(sawAuthFailed).toBe(true)
+    }
+  })
 })

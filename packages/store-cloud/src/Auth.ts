@@ -9,6 +9,7 @@
 
 import { Effect } from "effect"
 import { HttpClient, HttpClientRequest } from "@effect/platform"
+import { AuthFailed } from "./Errors.js"
 
 /**
  * Token provider contract: a nullary function returning a string,
@@ -159,3 +160,73 @@ export const withRefreshOn401 =
         ? Effect.sync(() => token.invalidate())
         : Effect.void,
     )
+
+// Re-export AuthFailed so callers can import it from Auth.ts
+export { AuthFailed } from "./Errors.js"
+
+/**
+ * Browser auth strategy: bootstrap a bearer token via fetch to a
+ * server-provided endpoint (typically `/rxweave/session-token`),
+ * cache it (TTL via cachedToken), and on 401 invalidate-AND-retry the
+ * failed request once. After a second 401, propagate AuthFailed.
+ *
+ * Composition relies on `withBearerToken(cached)` to attach the header
+ * via mapRequestEffect — that wrapper re-resolves the cache on every
+ * request, so calling `cached.invalidate()` then re-issuing through
+ * the same wrapped client is sufficient to send a fresh token.
+ *
+ * The retry layer uses `HttpClient.transform` (available in
+ * @effect/platform ^0.96) which wraps the existing client's execute
+ * effect — on 401 we invalidate the cache and re-execute the same
+ * request through `withAuth` so the second send gets a fresh token via
+ * `mapRequestEffect`. Retry budget is exactly one extra send per
+ * request — no exponential schedule, no backoff.
+ */
+export const sessionTokenFetch = (opts: {
+  readonly origin: string
+  readonly tokenPath: string
+}): {
+  readonly transformClient: <E, R>(
+    c: HttpClient.HttpClient.With<E, R>,
+  ) => HttpClient.HttpClient.With<E | AuthFailed, R>
+} => {
+  const tokenUrl = `${opts.origin}${opts.tokenPath}`
+
+  const provider: TokenProvider = async () => {
+    const r = await fetch(tokenUrl)
+    if (!r.ok) {
+      throw new Error(`session-token fetch failed: ${r.status}`)
+    }
+    return (await r.text()).trim()
+  }
+  const cached = cachedToken(provider)
+
+  return {
+    transformClient: <E, R>(
+      client: HttpClient.HttpClient.With<E, R>,
+    ): HttpClient.HttpClient.With<E | AuthFailed, R> => {
+      const withAuth = withBearerToken(cached)(client)
+      // HttpClient.transform wraps the client's execute: it receives
+      // (firstEffect, request) where firstEffect is the Effect that
+      // will execute the first request. We flatMap it — on 401 we
+      // invalidate the cache and call withAuth.execute(request) again
+      // so the second send resolves a fresh token via mapRequestEffect.
+      return HttpClient.transform(
+        withAuth,
+        (firstEffect, request) =>
+          Effect.flatMap(firstEffect, (first) => {
+            if (first.status !== 401) return Effect.succeed(first)
+            cached.invalidate()
+            return Effect.flatMap(withAuth.execute(request), (second) => {
+              if (second.status === 401) {
+                return Effect.fail(
+                  new AuthFailed({ cause: "401 after token refresh" }),
+                )
+              }
+              return Effect.succeed(second)
+            })
+          }),
+      ) as HttpClient.HttpClient.With<E | AuthFailed, R>
+    },
+  }
+}

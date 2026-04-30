@@ -15,3 +15,15 @@ export class WatchdogTimeout extends Schema.TaggedError<WatchdogTimeout>()(
   "WatchdogTimeout",
   { idleMs: Schema.Number },
 ) {}
+
+/**
+ * Raised by `sessionTokenFetch` when two consecutive RPC calls return
+ * 401 — even after invalidating the cached token and refetching a fresh
+ * one. At this point the session cannot be recovered by retrying; the
+ * application must re-bootstrap (e.g., reload the page or prompt the
+ * user to log in again). Terminal — not classified as retryable.
+ */
+export class AuthFailed extends Schema.TaggedError<AuthFailed>()(
+  "AuthFailed",
+  { cause: Schema.String },
+) {}
