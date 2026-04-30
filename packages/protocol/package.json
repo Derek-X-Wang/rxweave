@@ -46,14 +46,14 @@
   "dependencies": {
     "effect": "^3.21.0",
     "@effect/rpc": "^0.75.0",
-    "@rxweave/schema": "workspace:^"
+    "@rxweave/schema": "workspace:^",
+    "@rxweave/core": "workspace:^"
   },
   "devDependencies": {
     "typescript": "^5.5.4",
     "@types/node": "^22.10.0",
     "vitest": "^2.1.0",
     "@effect/vitest": "^0.17.0",
-    "@rxweave/core": "workspace:^",
     "@rxweave/store-memory": "workspace:^"
   }
 }
