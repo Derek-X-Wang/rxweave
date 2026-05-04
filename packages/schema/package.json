@@ -1,6 +1,6 @@
 {
   "name": "@rxweave/schema",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Event envelope, registry, ULID factory, cursor, filter — the shared schema contract for RxWeave.",
   "keywords": [
     "effect",

@@ -1,5 +1,26 @@
 # @rxweave/protocol
 
+## 0.5.1
+
+### Patch Changes
+
+- Promote `@rxweave/core` from devDependency to runtime dependency in `@rxweave/protocol`.
+
+  `@rxweave/protocol`'s published bundle (`dist/index.js`) imports `EventStore` from `@rxweave/core` at module load (the handlers — `Append`, `Subscribe`, `GetById`, `Query`, `QueryAfter` — all need the `EventStore` `Context.Tag` at runtime, and they are re-exported through the main entry). The dependency was incorrectly classified as a `devDependency` only.
+
+  In-monorepo workspace consumers (every package in this repo) were unaffected because Bun/npm workspace dedupe resolves `@rxweave/core` from the root `node_modules` regardless of which `package.json` declared it. The bug only surfaces for external consumers that bundle `@rxweave/protocol` standalone — caught by RxWeave Cloud's Convex/esbuild integration:
+
+  ```
+  Could not resolve "@rxweave/core"
+    node_modules/.bun/@rxweave+protocol@…/dist/index.js:88:27:
+      import { EventStore } from "@rxweave/core";
+  ```
+
+  Behavioral diff: zero. The `dist/index.js` JavaScript is byte-identical to v0.5.0; only the `package.json` `dependencies` field changes. No circular dependency risk: `@rxweave/core` only depends on `effect` and `@rxweave/schema`, never on `@rxweave/protocol` or any downstream package.
+
+  - @rxweave/core@0.5.1
+  - @rxweave/schema@0.5.1
+
 ## 0.5.0
 
 ### Minor Changes

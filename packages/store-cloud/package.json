@@ -1,6 +1,6 @@
 {
   "name": "@rxweave/store-cloud",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Bearer-authenticated cloud EventStore client for RxWeave over @effect/rpc NDJSON.",
   "keywords": [
     "effect",

@@ -1,6 +1,6 @@
 {
   "name": "@rxweave/cli",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "The `rxweave` CLI — init, dev, emit, stream, query, inspect, registry. AI-agent-friendly (NDJSON I/O, no prompts).",
   "keywords": [
     "effect",

@@ -1,6 +1,6 @@
 {
   "name": "@rxweave/reactive",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Stream helpers for filtering and transforming RxWeave event streams (whereType, byActor, bySource, withinWindow).",
   "keywords": [
     "effect",
