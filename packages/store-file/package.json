@@ -1,6 +1,6 @@
 {
   "name": "@rxweave/store-file",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "JSONL file-backed EventStore adapter for RxWeave with fsync + cold-start recovery.",
   "keywords": [
     "effect",

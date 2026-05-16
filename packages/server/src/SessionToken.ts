@@ -1,5 +1,5 @@
 import { HttpRouter, HttpServerResponse } from "@effect/platform"
-import { Effect, Layer } from "effect"
+import { Layer } from "effect"
 import { SESSION_TOKEN_PATH } from "@rxweave/protocol"
 
 /**

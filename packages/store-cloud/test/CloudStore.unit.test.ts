@@ -510,6 +510,69 @@ describe("CloudStore — heartbeat watchdog", () => {
       yield* Fiber.interrupt(fiber)
     }).pipe(Effect.provide(EventRegistry.Live)),
   )
+
+  it.scoped("intervalMs below server clamp does NOT false-fire watchdog (bug 1 regression)", () =>
+    Effect.gen(function* () {
+      const reg = yield* EventRegistry
+      // Bug 1 (pre-v0.5.2): client computed idleThreshold = intervalMs * 3
+      // from the *unclamped* request, while the server clamps intervalMs
+      // to [1000, 300_000]. With a sub-second request (e.g., intervalMs:
+      // 100), the buggy threshold was 300 ms — far below the 1000 ms
+      // gap between server-emitted heartbeats. The 1Hz watchdog tick
+      // therefore observed `now - lastHeartbeatAt > 300` on its first
+      // post-arming poll and false-fired WatchdogTimeout, triggering a
+      // reconnect loop on every healthy sub-second subscription.
+      //
+      // Fix: idleThreshold uses clampIntervalMs(intervalMs) * 3 inside
+      // heartbeatGuard, matching the server's clamp policy.
+      //
+      // Test shape: emit a single heartbeat at t=0 then go silent
+      // (same as the "fires after 3 × intervalMs" test above), but
+      // advance the test clock only ~2500 ms total — well past the
+      // buggy threshold (300 ms) and below the fixed threshold
+      // (3000 ms). Under the bug the watchdog fires, retry hits the
+      // permanent NotFoundWireError on reconnect, and the fiber
+      // settles to Failure. Under the fix the watchdog hasn't fired
+      // yet and the fiber remains Suspended on Stream.take(1).
+      let callCount = 0
+      const mockClient: CloudRpcClient = {
+        Append: () => Effect.succeed([]),
+        Subscribe: () => {
+          callCount++
+          if (callCount === 1) {
+            return Stream.concat(
+              Stream.fromIterable([
+                { _tag: "Heartbeat", at: 0 } as unknown as never,
+              ]),
+              Stream.never,
+            )
+          }
+          // If the bug fires, retry kicks in — serve a permanent error
+          // so the fiber settles quickly rather than retry-looping.
+          return Stream.fail({ _tag: "NotFoundWireError", id: "x" })
+        },
+        GetById: () => Effect.die("unused"),
+        Query: () => Effect.die("unused"),
+        QueryAfter: () => Effect.die("unused"),
+      }
+      const shape = yield* makeCloudEventStore(mockClient, reg, {
+        heartbeat: { intervalMs: 100 },
+      })
+      const fiber = yield* Effect.fork(
+        Stream.runCollect(shape.subscribe({ cursor: "earliest" }).pipe(Stream.take(1))),
+      )
+      // t=1500 ms — past the buggy 300 ms threshold, below the fixed
+      // 3000 ms threshold.
+      yield* TestClock.adjust("1500 millis")
+      // Allow the retry backoff (initial 500 ms) to fire so a buggy run
+      // reaches the permanent NotFoundWireError on the second Subscribe
+      // call before we sample the fiber status.
+      yield* TestClock.adjust("1000 millis")
+      const status = yield* Fiber.status(fiber)
+      expect(status._tag).toBe("Suspended")
+      yield* Fiber.interrupt(fiber)
+    }).pipe(Effect.provide(EventRegistry.Live)),
+  )
 })
 
 describe("CloudStore — heartbeat filter ordering", () => {

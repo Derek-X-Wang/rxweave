@@ -35,14 +35,12 @@
 
 import {
   Chunk,
-  Clock,
   Duration,
   Effect,
   Layer,
   Option,
   Ref,
   Schedule,
-  Schema,
   Stream,
 } from "effect"
 import { FetchHttpClient, type HttpClient } from "@effect/platform"
@@ -56,7 +54,13 @@ import {
   QueryError,
   SubscribeError,
 } from "@rxweave/core"
-import { Heartbeat, type HeartbeatConfig, RxWeaveRpc } from "@rxweave/protocol"
+import {
+  type Heartbeat,
+  type HeartbeatConfig,
+  RxWeaveRpc,
+  heartbeatGuard,
+  isHeartbeat,
+} from "@rxweave/protocol"
 
 import {
   cachedToken,
@@ -66,13 +70,6 @@ import {
   withRefreshOn401,
 } from "./Auth.js"
 import { isRetryable } from "./Retry.js"
-import { WatchdogTimeout } from "./Errors.js"
-
-/**
- * Created once at module scope — `Schema.is` returns a closure and
- * constructing it per-call would be wasteful.
- */
-const isHeartbeat = Schema.is(Heartbeat)
 
 export interface CloudStoreOpts {
   /** Base URL of the cloud's `/rxweave/rpc` endpoint. */
@@ -105,7 +102,7 @@ export interface CloudRpcClient {
   ) => Effect.Effect<ReadonlyArray<EventEnvelope>, unknown, never>
   readonly Subscribe: (
     input: { readonly cursor: Cursor; readonly filter?: Filter; readonly heartbeat?: HeartbeatConfig },
-  ) => Stream.Stream<EventEnvelope, unknown, never>
+  ) => Stream.Stream<EventEnvelope | Heartbeat, unknown, never>
   readonly GetById: (input: { readonly id: EventId }) => Effect.Effect<EventEnvelope, unknown, never>
   readonly Query: (
     input: { readonly filter: Filter; readonly limit: number },
@@ -171,20 +168,6 @@ export const makeCloudEventStore = (
             // across a reconnect.
             const lastDelivered = yield* Ref.make<Cursor>("latest")
 
-            // undefined until first heartbeat observed; the watchdog
-            // checks for non-undefined before firing.
-            const lastHeartbeatAt = yield* Ref.make<number | undefined>(undefined)
-
-            // Updates lastHeartbeatAt on every Heartbeat item.
-            // Clock.currentTimeMillis is consistent with the convention used
-            // elsewhere in the repo and works identically with TestClock.
-            const updateWatchdog = (item: unknown): Effect.Effect<void> =>
-              isHeartbeat(item)
-                ? Clock.currentTimeMillis.pipe(
-                    Effect.flatMap((now) => Ref.set(lastHeartbeatAt, now)),
-                  )
-                : Effect.void
-
             // Each (re)connection re-reads `lastDelivered` so a reconnect
             // after some events were already delivered resumes from the
             // most recent one, not the original cursor. Only the
@@ -200,96 +183,49 @@ export const makeCloudEventStore = (
                 ...(heartbeatConfig !== undefined ? { heartbeat: heartbeatConfig } : {}),
               }
 
-              const itemStream = client
-                .Subscribe(subscribePayload)
-                .pipe(
-                  // (1) Watchdog tap — BEFORE the filter so heartbeats
-                  //     (which will be filtered out next) are still seen
-                  //     here to update lastHeartbeatAt.
-                  Stream.tap(updateWatchdog),
-                  // (2) Drop heartbeat sentinels and surface unknown sentinels
-                  //     as stream failures.
-                  //
-                  //     Forward-compat contract: a future-version sentinel with
-                  //     an unknown _tag (e.g. a v0.6 ProgressMarker arriving at
-                  //     a v0.5 client) must NOT be silently dropped or forwarded
-                  //     as a malformed EventEnvelope. We gate on the presence of
-                  //     a string `id` field — the invariant all EventEnvelopes
-                  //     satisfy — and fail the stream for anything that passes
-                  //     neither the Heartbeat check nor the id check.
-                  //
-                  //     This keeps the subscribe stream honest: callers only see
-                  //     well-formed envelopes, and a version skew surfaces as an
-                  //     explicit error rather than a corrupted cursor or a phantom
-                  //     item in the output. If a future v0.6 needs to handle
-                  //     unknown sentinels gracefully, the regression test
-                  //     "future-sentinel decode failure" will catch any weakening
-                  //     of this contract and force an explicit forward-compat
-                  //     policy.
-                  Stream.flatMap((item) => {
-                    if (isHeartbeat(item)) return Stream.empty
-                    const asAny = item as { id?: unknown }
-                    if (typeof asAny.id === "string") {
-                      return Stream.make(item as EventEnvelope)
-                    }
-                    // Unknown sentinel — not a Heartbeat and has no `id`.
-                    // Fail the stream so version skew surfaces explicitly
-                    // rather than corrupting the cursor or emitting garbage.
-                    const tag = (item as { _tag?: unknown })._tag
-                    return Stream.fail(
-                      new SubscribeError({
-                        reason: `unknown-sentinel:${typeof tag === "string" ? tag : "unknown"}`,
-                      }),
-                    )
-                  }),
-                  // (3) Cursor tap runs AFTER the filter so it only sees envelopes
-                  //     with valid `id` fields. Pre-v0.5 this tap was at the head
-                  //     of the pipe; that placement would attempt
-                  //     Ref.set(lastDelivered, undefined) for every heartbeat.
-                  Stream.tap((e) => Ref.set(lastDelivered, e.id)),
-                )
+              // Heartbeat-aware pipeline:
+              //   1. (Optional) `heartbeatGuard` taps each item to arm
+              //      the per-subscription liveness Ref, strips
+              //      `Heartbeat` sentinels from the user-facing stream,
+              //      and merges in a never-emitting watchdog that fails
+              //      with `WatchdogTimeout` if the idle threshold lapses.
+              //      The threshold is computed against the *clamped*
+              //      interval inside the guard (pre-v0.5.2 used the raw
+              //      intervalMs and false-fired for sub-second requests).
+              //   2. Decode flatMap surfaces unknown sentinels (forward-
+              //      compat against future v0.6+ sentinels) and forwards
+              //      well-formed envelopes. Heartbeats are still dropped
+              //      defensively here for the no-config path so a
+              //      misbehaving server cannot leak them into user output.
+              //   3. Cursor tap runs after decode so it only sees
+              //      envelopes with valid `id` fields.
+              const guarded =
+                heartbeatConfig !== undefined
+                  ? client
+                      .Subscribe(subscribePayload)
+                      .pipe(heartbeatGuard(heartbeatConfig.intervalMs))
+                  : client.Subscribe(subscribePayload)
 
-              if (heartbeatConfig === undefined) return itemStream
-
-              // Watchdog: a 1Hz polling effect that fails with WatchdogTimeout
-              // when too much time has elapsed since the last heartbeat.
-              // Only fires when lastHeartbeatAt is non-undefined (i.e., at
-              // least one heartbeat has been observed). This guards against
-              // false positives on old servers (cloud-v0.2) that don't emit
-              // heartbeats even when the client requests them.
-              //
-              // Implementation: Effect.repeat(checkEffect, spaced(1s)) runs
-              // checkEffect on an infinite 1Hz schedule and only stops when
-              // the effect fails. Stream.fromEffect wraps it so it emits
-              // ZERO items (type never) — the stream only fails when the
-              // watchdog fires. This avoids the void-emission bug of
-              // repeatEffectWithSchedule (which would emit void as items).
-              const idleThreshold = heartbeatConfig.intervalMs * 3
-              const checkOnce: Effect.Effect<void, WatchdogTimeout> = Clock.currentTimeMillis.pipe(
-                Effect.flatMap((now) =>
-                  Ref.get(lastHeartbeatAt).pipe(
-                    Effect.flatMap((at) =>
-                      at !== undefined && now - at > idleThreshold
-                        ? Effect.fail(new WatchdogTimeout({ idleMs: now - at }))
-                        : Effect.void,
-                    ),
-                  ),
-                ),
-              )
-              const watchdogStream: Stream.Stream<never, WatchdogTimeout, never> =
-                Stream.fromEffect(
-                  Effect.repeat(checkOnce, Schedule.spaced(Duration.seconds(1))).pipe(
-                    // Effect.repeat on an infinite schedule only stops when the
-                    // effect fails; the repeat itself succeeds with the last
-                    // value (never reached). Cast to never so the stream's
-                    // success channel stays as the expected never.
-                    Effect.flatMap(() => Effect.never as Effect.Effect<never, WatchdogTimeout>),
-                  ),
-                )
-
-              return Stream.merge(
-                itemStream,
-                watchdogStream as Stream.Stream<EventEnvelope, WatchdogTimeout, never>,
+              return guarded.pipe(
+                Stream.flatMap((item) => {
+                  if (isHeartbeat(item)) return Stream.empty
+                  const asAny = item as { id?: unknown }
+                  if (typeof asAny.id === "string") {
+                    return Stream.make(item as EventEnvelope)
+                  }
+                  // Forward-compat: a future v0.6 sentinel with an
+                  // unknown `_tag` (e.g. ProgressMarker) must NOT be
+                  // silently dropped or forwarded as a malformed
+                  // EventEnvelope. Fail explicitly so version skew
+                  // surfaces rather than corrupting the cursor.
+                  const tag = (item as { _tag?: unknown })._tag
+                  return Stream.fail(
+                    new SubscribeError({
+                      reason: `unknown-sentinel:${typeof tag === "string" ? tag : "unknown"}`,
+                    }),
+                  )
+                }),
+                Stream.tap((e) => Ref.set(lastDelivered, e.id)),
               )
             })
 

@@ -1,20 +1,18 @@
 import { Schema } from "effect"
 
 /**
- * Surfaced when the heartbeat-driven liveness watchdog observes
- * `> 3 × intervalMs` since the last `Heartbeat` arrival. Classified
- * retryable by `Retry.isRetryable` so the existing Stream.retry
- * schedule reconnects from the last-delivered cursor.
- *
- * Only armed once the first heartbeat is observed — see `makeLive`
- * subscribe pipeline. Old servers (cloud-v0.2) that ignore the
- * heartbeat field never arm the watchdog, so this error never
- * fires against them.
+ * `WatchdogTimeout` is the typed error surfaced when the heartbeat-
+ * driven liveness watchdog observes > 3 × clamped-intervalMs since
+ * the last `Heartbeat` arrival. As of v0.5.2 the class itself lives
+ * in `@rxweave/protocol/Heartbeat.ts` so it can be shared with the
+ * Convex-hosted Subscribe handler in the private cloud repo. We re-
+ * export it from this module so pre-v0.5.2 consumers
+ * (`@rxweave/store-cloud` re-exports from index.ts, plus `apps/web`
+ * + conformance tests that import it directly) keep working with no
+ * import-path change. Single class identity preserved — `instanceof`
+ * still works for anyone catching it on the user-facing side.
  */
-export class WatchdogTimeout extends Schema.TaggedError<WatchdogTimeout>()(
-  "WatchdogTimeout",
-  { idleMs: Schema.Number },
-) {}
+export { WatchdogTimeout } from "@rxweave/protocol"
 
 /**
  * Raised by `sessionTokenFetch` when two consecutive RPC calls return
