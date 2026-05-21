@@ -1,5 +1,14 @@
 # @rxweave/store-cloud
 
+## 0.5.3
+
+### Patch Changes
+
+- Add `token?: TokenProvider` to `LiveFromBrowserOpts` (bearer-provider auth path) and fix `sessionTokenFetch` cross-origin cookie bug (`credentials:"include"`).
+  - @rxweave/core@0.5.3
+  - @rxweave/protocol@0.5.3
+  - @rxweave/schema@0.5.3
+
 ## 0.5.1
 
 ### Patch Changes

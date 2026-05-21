@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.5.3
+
+Token-mediated `LiveFromBrowser` auth path + cross-origin cookie fix. Additive — no wire-protocol change, no breaking changes.
+
+- **`LiveFromBrowserOpts.token?: TokenProvider`** — new bearer-provider auth path for third-party browser consumers. When `token` is present, `sessionTokenFetch` (cookie bootstrap) is skipped entirely. The provider is wrapped in a 5-min TTL cache (same as `CloudStore.Live`) and the cache is invalidated before each `Subscribe` attempt (initial connect + every watchdog-triggered reconnect), so expiring Better Auth session tokens are refreshed automatically on reconnect. `tokenPath` is ignored when `token` is provided. The cookie bootstrap path (`token` absent) is unchanged — same-origin convenience for hosted/OSS deployments.
+- **Bug fix — `sessionTokenFetch` cross-origin cookie bootstrap.** `fetch(tokenUrl)` lacked `credentials:"include"`, preventing the browser from sending cookies when the page and the session-token endpoint are on different origins (e.g., dashboard on a subdomain, token endpoint on the API origin). Fixed with a one-line addition.
+- **`onSubscribeConnect` hook on `makeCloudEventStore`** — new internal field (`() => void`) called synchronously before each `connect` Effect in the subscribe loop. Used by `LiveFromBrowser`'s token path to invalidate the cached token before each Subscribe attempt; available to future callers needing a per-reconnect hook.
+- **JSDoc.** `LiveFromBrowserOpts` now documents the two-path contract: `token` = primary (third-party consumers; expects a Better Auth session token minted server-side and injected into the page), cookie bootstrap = same-origin convenience for hosted/OSS server deployments. Token lifecycle and reconnect behavior documented inline.
+- **Tests.** `+4` tests (`@rxweave/store-cloud`): `credentials:"include"` verified on the token fetch; token path bypasses session-token endpoint; `Authorization` header uses the provided token; `onSubscribeConnect` called on initial connect + each reconnect. 57/57 conformance green against live cloud-v0.3.4 deployment.
+
 ## v0.5.2
 
 Heartbeat-contract consolidation. Single source of truth for the `Subscribe` stream's keep-alive in `@rxweave/protocol/Heartbeat.ts`; fixes a sub-second-interval false-watchdog reconnect-storm bug and a type-erasure issue in the cloud client. Purely additive on the public surface — no breaking changes.

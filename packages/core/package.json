@@ -1,6 +1,6 @@
 {
   "name": "@rxweave/core",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "description": "EventStore service tag + conformance test harness for RxWeave storage adapters.",
   "keywords": [
     "effect",

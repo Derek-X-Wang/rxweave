@@ -1,5 +1,16 @@
 # @rxweave/dev
 
+## 0.5.3
+
+### Patch Changes
+
+- @rxweave/cli@0.5.3
+- @rxweave/llm@0.5.3
+- @rxweave/runtime@0.5.3
+- @rxweave/schema@0.5.3
+- @rxweave/store-file@0.5.3
+- @rxweave/store-memory@0.5.3
+
 ## 0.5.1
 
 ### Patch Changes
