@@ -2,8 +2,8 @@ import { useEffect } from "react"
 import { Cause, Effect, Layer, ManagedRuntime, Stream } from "effect"
 import type { Editor, TLRecord } from "tldraw"
 import { EventStore } from "@rxweave/core"
-import { EventRegistry } from "@rxweave/schema"
-import { CloudStore } from "@rxweave/store-cloud"
+import { EventRegistry, type EventDefWire } from "@rxweave/schema"
+import { CloudStore, syncRegistry, type RegistryRpcClient } from "@rxweave/store-cloud"
 import {
   CANVAS_SCHEMAS,
   CanvasBindingDeleted,
@@ -28,16 +28,11 @@ import {
 //   source='remote', so our outgoing listener ignores them — no sync
 //   loop, no duplicate appends.
 //
-// Registry digest: the embedded server registers the same four canvas
-// schemas during startup. `digestOne` is deterministic over
-// (type, version, Schema.ast), so both sides compute an identical
-// aggregate digest and `Append` RPCs pass the digest gate without any
-// explicit `RegistryPush` round-trip. Flagged here because the moment
-// one side's schema list drifts (e.g. a new `canvas.asset.*` type on
-// the server alone) the digest mismatch will surface as wire-level
-// `registry-out-of-date` on every append — at which point this code
-// needs to pivot to `syncRegistry()` from `@rxweave/store-cloud` and
-// stand up a second RPC client purely for the negotiation.
+// Registry digest: in cloud mode (VITE_RXWEAVE_TOKEN set), the server starts
+// with an empty registry. The bridge pushes its local schemas on startup via
+// a fetch-based RegistryRpcClient shim + `syncRegistry` so Append's digest
+// gate passes. In embedded mode the embedded server pre-registers the same
+// canvas schemas, so no push is needed.
 
 export function RxweaveBridge({ editor }: { editor: Editor }) {
   useEffect(() => {
@@ -120,9 +115,48 @@ export function RxweaveBridge({ editor }: { editor: Editor }) {
     // requirements — what `ManagedRuntime.make` needs. `Layer.merge`
     // would have kept `EventRegistry` in the requirement channel.
     ;(async () => {
-      const layer = CloudStore.LiveFromBrowser({
-        origin: window.location.origin,
-      }).pipe(Layer.provideMerge(EventRegistry.Live))
+      const origin = (import.meta as any).env?.VITE_RXWEAVE_ORIGIN ?? window.location.origin
+      const apiToken = (import.meta as any).env?.VITE_RXWEAVE_TOKEN as string | undefined
+
+      // In cloud mode (apiToken set), the server starts with an empty registry.
+      // The bridge registers canvas schemas locally but must push them to the
+      // server so Append's digest gate passes. Build a minimal fetch-based
+      // RegistryRpcClient shim for syncRegistry (bypasses @effect/rpc entirely).
+      const rpcUrl = `${origin}/rxweave/rpc/`
+      const authHdr = apiToken ? { authorization: `Bearer ${apiToken}` } : {}
+      const registryClient: RegistryRpcClient = {
+        RegistrySyncDiff: ({ clientDigest }) =>
+          Effect.tryPromise(async () => {
+            const body =
+              JSON.stringify({ _tag: "Request", id: "rs-diff", tag: "RegistrySyncDiff", payload: { clientDigest }, headers: [] }) + "\n"
+            const res = await fetch(rpcUrl, { method: "POST", headers: { "content-type": "application/ndjson", ...authHdr }, body })
+            const text = await res.text()
+            const msg = JSON.parse(text.trim().split("\n")[0]!) as { exit: { _tag: string; value?: unknown; cause?: unknown } }
+            if (msg.exit._tag !== "Success") throw new Error(JSON.stringify(msg.exit))
+            return msg.exit.value as { upToDate: boolean; missingOnClient: ReadonlyArray<EventDefWire>; missingOnServer: ReadonlyArray<string> }
+          }),
+        RegistryPush: ({ defs }) =>
+          Effect.tryPromise(async () => {
+            const body =
+              JSON.stringify({
+                _tag: "Request",
+                id: "rs-push",
+                tag: "RegistryPush",
+                payload: { defs: defs.map((d) => ({ type: d.type, version: d.version, payloadSchema: d.payloadSchema, digest: d.digest })) },
+                headers: [],
+              }) + "\n"
+            const res = await fetch(rpcUrl, { method: "POST", headers: { "content-type": "application/ndjson", ...authHdr }, body })
+            const text = await res.text()
+            const msg = JSON.parse(text.trim().split("\n")[0]!) as { exit: { _tag: string; value?: unknown; cause?: unknown } }
+            if (msg.exit._tag !== "Success") throw new Error(JSON.stringify(msg.exit))
+          }).pipe(Effect.asVoid),
+      }
+
+      const layer = apiToken
+        ? CloudStore.Live({ url: `${origin}/rxweave/rpc/`, token: () => apiToken }).pipe(
+            Layer.provideMerge(EventRegistry.Live),
+          )
+        : CloudStore.LiveFromBrowser({ origin }).pipe(Layer.provideMerge(EventRegistry.Live))
       runtime = ManagedRuntime.make(layer)
 
       // Local registry registration — mirrors server-side startup so
@@ -136,6 +170,11 @@ export function RxweaveBridge({ editor }: { editor: Editor }) {
             // the same schema set is re-imported into an already-live
             // registry inside a single page load.
             yield* reg.registerAll(CANVAS_SCHEMAS, { swallowDuplicates: true })
+            if (apiToken) {
+              // Cloud mode: server registry starts empty. Push canvas schemas
+              // so Append's digest gate passes without a registry-out-of-date error.
+              yield* syncRegistry(registryClient)
+            }
           }),
         )
       } catch (err) {
@@ -187,13 +226,11 @@ export function RxweaveBridge({ editor }: { editor: Editor }) {
           const store = yield* EventStore
           yield* Stream.runForEach(
             store.subscribe({ cursor: "earliest" }),
-            (event) => Effect.sync(() => applyIncoming(editor, event)),
+            (event) => Effect.sync(() => { applyIncoming(editor, event) }),
           )
         }).pipe(
           Effect.tapErrorCause((cause) =>
-            Effect.sync(() =>
-              console.warn("[web] subscribe cause:\n" + Cause.pretty(cause)),
-            ),
+            Effect.sync(() => { console.warn("[web] subscribe cause:\n" + Cause.pretty(cause)) }),
           ),
         ),
       )
@@ -275,4 +312,3 @@ function applyIncoming(
     console.warn("[web] applyIncoming skipped malformed event", event.type, err)
   }
 }
-
