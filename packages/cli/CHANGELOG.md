@@ -1,5 +1,17 @@
 # @rxweave/cli
 
+## 0.5.4
+
+### Patch Changes
+
+- @rxweave/core@0.5.4
+- @rxweave/reactive@0.5.4
+- @rxweave/runtime@0.5.4
+- @rxweave/schema@0.5.4
+- @rxweave/server@0.5.4
+- @rxweave/store-file@0.5.4
+- @rxweave/store-memory@0.5.4
+
 ## 0.5.3
 
 ### Patch Changes

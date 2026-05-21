@@ -1,5 +1,14 @@
 # @rxweave/store-cloud
 
+## 0.5.4
+
+### Patch Changes
+
+- Fix: LiveFromBrowser RPC fetches now carry credentials:include for WKWebView cross-origin streaming compat
+  - @rxweave/core@0.5.4
+  - @rxweave/protocol@0.5.4
+  - @rxweave/schema@0.5.4
+
 ## 0.5.3
 
 ### Patch Changes

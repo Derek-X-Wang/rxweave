@@ -1,5 +1,19 @@
 # @rxweave/app
 
+## 0.5.4
+
+### Patch Changes
+
+- Updated dependencies
+  - @rxweave/store-cloud@0.5.4
+  - @rxweave/core@0.5.4
+  - @rxweave/llm@0.5.4
+  - @rxweave/protocol@0.5.4
+  - @rxweave/runtime@0.5.4
+  - @rxweave/schema@0.5.4
+  - @rxweave/server@0.5.4
+  - @rxweave/store-file@0.5.4
+
 ## 0.5.3
 
 ### Patch Changes

@@ -1094,6 +1094,94 @@ describe("CloudStore.LiveFromBrowser", () => {
       }
     }).pipe(Effect.scoped),
   )
+
+  // WKWebView cross-origin streaming requires credentials:"include" on every
+  // fetch call — without it the browser refuses to deliver ReadableStream body
+  // chunks across origins even when the server sends
+  // Access-Control-Allow-Credentials:true + a specific (non-wildcard) origin.
+  // Chrome is unaffected (no-op), but the fix is required for Safari/WKWebView.
+  // Verified empirically: watchdog-silent for 35s in WKWebView smoke test.
+  //
+  // Implementation note: FetchHttpClient.RequestInit is read from
+  // FiberRef.currentContext at fetch-call time and is NOT propagated through
+  // Layer.provide composition (inner-layer services are hidden from the outer
+  // context). The fix uses HttpClient.transform + Effect.provide(send, ctx)
+  // to inject RequestInit per-request, which works regardless of layer pattern.
+
+  it.effect("LiveFromBrowser token path: RPC fetch uses credentials:include (WebKit compat)", () =>
+    Effect.gen(function* () {
+      let capturedCredentials: RequestCredentials | undefined
+      const restore = installMockFetch(async (req) => {
+        if (req.url.includes("/rxweave/rpc/")) {
+          capturedCredentials = req.credentials
+          const text = await req.text()
+          const firstLine = text.split("\n").find((l) => l.trim().length > 0) ?? ""
+          let requestId = "1"
+          try {
+            const parsed = JSON.parse(firstLine) as { id?: string }
+            if (typeof parsed.id === "string") requestId = parsed.id
+          } catch { /* keep requestId */ }
+          return new Response(
+            `${JSON.stringify({ _tag: "Exit", requestId, exit: { _tag: "Success", value: [] } })}\n`,
+            { status: 200, headers: { "Content-Type": "application/ndjson" } },
+          )
+        }
+        return new Response("", { status: 200 })
+      })
+      try {
+        const layer = CloudStore.LiveFromBrowser({
+          origin: "http://test-origin.invalid",
+          token: () => "rxk_test",
+        })
+        const full = Layer.provide(layer, EventRegistry.Live)
+        const ctx = yield* Layer.build(full)
+        const store = Context.get(ctx, EventStore)
+        yield* store.append([])
+        expect(capturedCredentials).toBe("include")
+      } finally {
+        restore()
+      }
+    }).pipe(Effect.scoped),
+  )
+
+  it.effect("LiveFromBrowser cookie path: RPC fetch uses credentials:include (WebKit compat)", () =>
+    Effect.gen(function* () {
+      let capturedRpcCredentials: RequestCredentials | undefined
+      const restore = installMockFetch(async (req) => {
+        if (req.url.includes("/rxweave/session-token")) {
+          return new Response(JSON.stringify({ token: "rxk_session" }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          })
+        }
+        if (req.url.includes("/rxweave/rpc/")) {
+          capturedRpcCredentials = req.credentials
+          const text = await req.text()
+          const firstLine = text.split("\n").find((l) => l.trim().length > 0) ?? ""
+          let requestId = "1"
+          try {
+            const parsed = JSON.parse(firstLine) as { id?: string }
+            if (typeof parsed.id === "string") requestId = parsed.id
+          } catch { /* keep requestId */ }
+          return new Response(
+            `${JSON.stringify({ _tag: "Exit", requestId, exit: { _tag: "Success", value: [] } })}\n`,
+            { status: 200, headers: { "Content-Type": "application/ndjson" } },
+          )
+        }
+        return new Response("", { status: 200 })
+      })
+      try {
+        const layer = CloudStore.LiveFromBrowser({ origin: "http://test-origin.invalid" })
+        const full = Layer.provide(layer, EventRegistry.Live)
+        const ctx = yield* Layer.build(full)
+        const store = Context.get(ctx, EventStore)
+        yield* store.append([])
+        expect(capturedRpcCredentials).toBe("include")
+      } finally {
+        restore()
+      }
+    }).pipe(Effect.scoped),
+  )
 })
 
 describe("CloudStore — onSubscribeConnect hook", () => {

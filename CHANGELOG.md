@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.5.4
+
+WKWebView cross-origin streaming fix. Additive — no wire-protocol change, no breaking changes.
+
+- **Bug fix — `LiveFromBrowser` RPC fetches now carry `credentials:"include"` (WebKit compat).** WKWebView refuses to deliver cross-origin `ReadableStream` body chunks unless the request carries `credentials:"include"`, even when the server sends `Access-Control-Allow-Credentials:true` + a specific (non-wildcard) `Access-Control-Allow-Origin`. Chrome is unaffected. Applied to both the token-provider path and the cookie-bootstrap path. Verified empirically: watchdog-silent for 35s in WKWebView smoke test against cloud-v0.3.5.
+- **Implementation.** `FetchHttpClient.RequestInit` is read from `FiberRef.currentContext` at call time and is NOT propagated through `Layer.provide` composition (inner-layer services are hidden from the outer context). The naive `Layer.succeed(FetchHttpClient.RequestInit, ...)` approach silently fails. The fix uses `HttpClient.transform` + `Effect.provide(send, credentialsCtx)` to inject `RequestInit` per-request — modifying `FiberRef.currentContext` for the duration of each `send` Effect. Works regardless of how the consumer composes the layer.
+- **Tests.** `+2` tests (`@rxweave/store-cloud`): `credentials:"include"` verified on RPC fetches for both token path and cookie path. 47/47 unit + auth tests green.
+
 ## v0.5.3
 
 Token-mediated `LiveFromBrowser` auth path + cross-origin cookie fix. Additive — no wire-protocol change, no breaking changes.

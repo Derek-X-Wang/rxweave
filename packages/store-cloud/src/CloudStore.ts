@@ -35,6 +35,7 @@
 
 import {
   Chunk,
+  Context,
   Duration,
   Effect,
   Layer,
@@ -43,7 +44,7 @@ import {
   Schedule,
   Stream,
 } from "effect"
-import { FetchHttpClient, type HttpClient } from "@effect/platform"
+import { FetchHttpClient, HttpClient } from "@effect/platform"
 import { RpcClient, RpcSerialization } from "@effect/rpc"
 import { type Cursor, EventRegistry, type EventEnvelope, type EventInput, type Filter, type EventId } from "@rxweave/schema"
 import {
@@ -337,6 +338,29 @@ export const makeCloudEventStore = (
  * browser consumers (LiveFromBrowser) set `drainBeforeSubscribe: true`
  * to page through history via QueryAfter before opening the live tail.
  */
+// Context snapshot injected per-request to set credentials:"include" on
+// cross-origin fetches. Required for WKWebView streaming: WebKit refuses to
+// deliver ReadableStream body chunks on cross-origin requests unless the
+// request carries credentials:"include", even when the server returns
+// Access-Control-Allow-Credentials:true + a specific (non-wildcard) origin.
+// Chrome is unaffected. Verified empirically: watchdog-silent for 35s in
+// WKWebView smoke test.
+//
+// Implementation: FetchHttpClient reads FetchHttpClient.RequestInit from
+// FiberRef.currentContext at call time. Layer composition (Layer.provide)
+// hides inner-layer services from the outer context, so RequestInit cannot
+// be threaded via layer alone. Instead, we inject it per-request via
+// HttpClient.transform + Effect.provide(send, credentialsCtx), which
+// modifies FiberRef.currentContext for the duration of each send Effect.
+const credentialsIncludeCtx = Context.make(FetchHttpClient.RequestInit, {
+  credentials: "include" as const,
+})
+
+const withCredentialsInclude = <E, R>(
+  client: HttpClient.HttpClient.With<E, R>,
+): HttpClient.HttpClient.With<E, R> =>
+  HttpClient.transform(client, (send) => Effect.provide(send, credentialsIncludeCtx))
+
 const makeLive = (config: {
   readonly url: string
   readonly transformClient: <E, R>(
@@ -507,7 +531,7 @@ export const CloudStore = {
       // provider and pick up refreshed credentials.
       const cached = cachedToken(opts.token)
       const transformClient = <E, R>(client: HttpClient.HttpClient.With<E, R>) =>
-        withRefreshOn401(cached)(withBearerToken(cached)(client))
+        withRefreshOn401(cached)(withBearerToken(cached)(withCredentialsInclude(client)))
       return makeLive({
         url,
         transformClient,
@@ -522,7 +546,8 @@ export const CloudStore = {
     const auth = sessionTokenFetch({ origin: opts.origin, tokenPath })
     return makeLive({
       url,
-      transformClient: auth.transformClient,
+      transformClient: <E, R>(client: HttpClient.HttpClient.With<E, R>) =>
+        auth.transformClient(withCredentialsInclude(client)),
       heartbeat,
       drainBeforeSubscribe: true,
     })
