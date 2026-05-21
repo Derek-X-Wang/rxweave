@@ -123,7 +123,11 @@ export interface CloudRpcClient {
 export const makeCloudEventStore = (
   client: CloudRpcClient,
   registry: EventRegistry["Type"],
-  opts?: { readonly heartbeat?: HeartbeatConfig; readonly drainBeforeSubscribe?: boolean },
+  opts?: {
+    readonly heartbeat?: HeartbeatConfig
+    readonly drainBeforeSubscribe?: boolean
+    readonly onSubscribeConnect?: () => void
+  },
 ): Effect.Effect<EventStoreShape, never, never> =>
   Effect.gen(function* () {
     // Tracks the id of the most recently *appended* envelope. Per the
@@ -173,6 +177,7 @@ export const makeCloudEventStore = (
             // most recent one, not the original cursor. Only the
             // Stream.tap below writes to `lastDelivered`.
             const connect = Effect.gen(function* () {
+              opts?.onSubscribeConnect?.()
               const resumeFrom = yield* Ref.get(lastDelivered)
               const effectiveCursor =
                 resumeFrom === "latest" ? cursor : resumeFrom
@@ -339,6 +344,7 @@ const makeLive = (config: {
   ) => HttpClient.HttpClient.With<E, R>
   readonly heartbeat?: HeartbeatConfig
   readonly drainBeforeSubscribe?: boolean
+  readonly onSubscribeConnect?: () => void
 }): Layer.Layer<EventStore, never, EventRegistry> => {
   // Protocol layer: HTTP over fetch with NDJSON. The bearer token is
   // attached via `transformClient` — `withBearerToken` applies
@@ -361,10 +367,11 @@ const makeLive = (config: {
     // `unknown` (they're all re-mapped into `AppendError` /
     // `SubscribeError` / etc. inside `makeCloudEventStore`).
     const cloudOpts =
-      config.heartbeat !== undefined || config.drainBeforeSubscribe === true
+      config.heartbeat !== undefined || config.drainBeforeSubscribe === true || config.onSubscribeConnect !== undefined
         ? {
             ...(config.heartbeat !== undefined ? { heartbeat: config.heartbeat } : {}),
             ...(config.drainBeforeSubscribe === true ? { drainBeforeSubscribe: true as const } : {}),
+            ...(config.onSubscribeConnect !== undefined ? { onSubscribeConnect: config.onSubscribeConnect } : {}),
           }
         : undefined
     return yield* makeCloudEventStore(
@@ -383,18 +390,42 @@ const DEFAULT_BROWSER_HEARTBEAT: HeartbeatConfig = { intervalMs: 15_000 }
 /**
  * Options for `CloudStore.LiveFromBrowser`.
  *
- * Unlike `CloudStoreOpts` (which takes a pre-formed `url` and an optional
- * token provider), `LiveFromBrowserOpts` takes an `origin` and derives both
- * the RPC URL (`${origin}/rxweave/rpc/`) and the session-token bootstrap URL
- * (`${origin}${tokenPath}`) internally. This is the browser-facing shape —
- * the auth strategy (session-token fetch with 401-retry) and drain mode are
- * baked in; callers only tune the origin, token path, and heartbeat interval.
+ * Two auth paths — pick one:
+ *
+ * **Bearer-provider (primary).** Pass `token: () => string | Promise<string>`.
+ * The factory skips the session-token endpoint entirely, caches the result,
+ * and re-calls the provider on each reconnect (e.g. after a watchdog timeout)
+ * so expiring credentials are refreshed automatically. Use this for any
+ * deployment where the dashboard and the RPC endpoint are on different origins
+ * — the token should be a Better Auth session token minted server-side and
+ * injected into the page.
+ *
+ * **Cookie bootstrap (same-origin convenience).** Omit `token`. The factory
+ * calls `GET ${origin}${tokenPath}` (default `/rxweave/session-token`) to
+ * exchange the current cookie session for a bearer. Works for hosted/OSS
+ * deployments where the dashboard is served from the same origin as the cloud
+ * RPC endpoint (`@rxweave/server` mounts this endpoint automatically).
+ *
+ * When `token` is present, `tokenPath` is ignored.
  */
 export interface LiveFromBrowserOpts {
-  /** Base origin, e.g. `"https://app.rxweave.io"`. No trailing slash. */
+  /** Base origin — always derives the RPC URL (`${origin}/rxweave/rpc/`). */
   readonly origin: string
   /**
-   * Server-relative path to the session-token endpoint.
+   * Bearer-token provider. PRIMARY path for third-party browser consumers.
+   *
+   * Called once per 5-minute TTL window and on every watchdog-triggered
+   * reconnect (cache is invalidated before each Subscribe attempt, allowing
+   * expired Better Auth session tokens to be refreshed). If the provider
+   * throws, the subscription fails and the app should re-authenticate.
+   *
+   * When present, `tokenPath` is ignored.
+   */
+  readonly token?: TokenProvider
+  /**
+   * Session-token endpoint path — CONVENIENCE path for hosted deployments
+   * where the dashboard is served from the same origin as the RPC endpoint.
+   * Cookie session → bearer exchange. Ignored when `token` is present.
    * @default "/rxweave/session-token"
    */
   readonly tokenPath?: string
@@ -451,21 +482,43 @@ export const CloudStore = {
 
   /**
    * `CloudStore.LiveFromBrowser(opts)` — browser-shaped sibling to
-   * `CloudStore.Live`. Derives the RPC URL and session-token URL from a
-   * single `origin`, wires `sessionTokenFetch` for auth (with 401-retry),
-   * enables heartbeat (default 15 s), and sets `drainBeforeSubscribe: true`
-   * to page through history via QueryAfter before opening the live tail.
+   * `CloudStore.Live`. Derives the RPC URL from `origin`, enables heartbeat
+   * (default 15 s), and sets `drainBeforeSubscribe: true` for the
+   * snapshot-then-live pattern.
    *
-   * Two paths are needed from a single `origin` — `/rxweave/rpc/` for RPC
-   * and `/rxweave/session-token` (or a custom `tokenPath`) for auth — which
-   * is why the browser factory takes `{ origin }` instead of `{ url, token }`.
+   * Auth is chosen by whether `opts.token` is present:
+   * - Bearer-provider path: `token` is wrapped in a 5-min TTL cache; cache
+   *   is invalidated before each Subscribe attempt (initial + reconnects) so
+   *   expiring credentials are refreshed on reconnect. `tokenPath` ignored.
+   * - Cookie bootstrap path: `sessionTokenFetch` exchanges the current cookie
+   *   session at `${origin}${tokenPath}` for a bearer. Same-origin convenience
+   *   for hosted deployments.
    *
    * Requires `EventRegistry` from the ambient context (same as `Live`).
    */
   LiveFromBrowser: (opts: LiveFromBrowserOpts): Layer.Layer<EventStore, never, EventRegistry> => {
-    const tokenPath = opts.tokenPath ?? DEFAULT_TOKEN_PATH
     const heartbeat = opts.heartbeat ?? DEFAULT_BROWSER_HEARTBEAT
     const url = `${opts.origin}/rxweave/rpc/`
+
+    if (opts.token !== undefined) {
+      // Bearer-provider path: mirror CloudStore.Live's token wiring exactly
+      // (cachedToken + withBearerToken + withRefreshOn401), plus invalidate
+      // the cache before each Subscribe attempt so reconnects re-call the
+      // provider and pick up refreshed credentials.
+      const cached = cachedToken(opts.token)
+      const transformClient = <E, R>(client: HttpClient.HttpClient.With<E, R>) =>
+        withRefreshOn401(cached)(withBearerToken(cached)(client))
+      return makeLive({
+        url,
+        transformClient,
+        heartbeat,
+        drainBeforeSubscribe: true,
+        onSubscribeConnect: () => cached.invalidate(),
+      })
+    }
+
+    // Cookie bootstrap path: unchanged from pre-v0.5.3 behavior.
+    const tokenPath = opts.tokenPath ?? DEFAULT_TOKEN_PATH
     const auth = sessionTokenFetch({ origin: opts.origin, tokenPath })
     return makeLive({
       url,

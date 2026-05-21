@@ -203,7 +203,7 @@ export const sessionTokenFetch = (opts: {
   const tokenUrl = `${opts.origin}${opts.tokenPath}`
 
   const provider: TokenProvider = async () => {
-    const r = await fetch(tokenUrl)
+    const r = await fetch(tokenUrl, { credentials: "include" })
     if (!r.ok) {
       throw new Error(`session-token fetch failed: ${r.status}`)
     }

@@ -876,6 +876,19 @@ describe("CloudStore.LiveFromBrowser", () => {
         heartbeat: { intervalMs: 5000 },
       }
       expect(full.tokenPath).toBe("/custom/auth")
+      // token field must also compile (bearer-provider path)
+      const withToken: LiveFromBrowserOpts = {
+        origin: "http://example.invalid",
+        token: () => "rxk_bearer",
+      }
+      expect(withToken.origin).toBe("http://example.invalid")
+      const withAsyncToken: LiveFromBrowserOpts = {
+        origin: "http://example.invalid",
+        token: async () => "rxk_async",
+        tokenPath: "/ignored",
+        heartbeat: { intervalMs: 5000 },
+      }
+      expect(withAsyncToken.tokenPath).toBe("/ignored")
     }),
   )
 
@@ -990,5 +1003,134 @@ describe("CloudStore.LiveFromBrowser", () => {
       })
       expect(layer).toBeDefined()
     }),
+  )
+
+  // --- token path (bearer-provider) ---
+
+  it.effect("LiveFromBrowser token path: skips session-token endpoint", () =>
+    // When `token` is provided, sessionTokenFetch must never be called.
+    // We install a mock fetch that records calls to the session-token endpoint
+    // and returns a valid NDJSON Exit for the RPC endpoint.
+    Effect.gen(function* () {
+      let sessionTokenCalls = 0
+      let tokenProviderCalls = 0
+      const restore = installMockFetch(async (req) => {
+        if (req.url.includes("/rxweave/session-token")) {
+          sessionTokenCalls += 1
+          return new Response(JSON.stringify({ token: "should-not-be-called" }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          })
+        }
+        if (req.url.includes("/rxweave/rpc/")) {
+          const text = await req.text()
+          const firstLine = text.split("\n").find((l) => l.trim().length > 0) ?? ""
+          let requestId = "1"
+          try {
+            const parsed = JSON.parse(firstLine) as { id?: string }
+            if (typeof parsed.id === "string") requestId = parsed.id
+          } catch { /* keep requestId */ }
+          return new Response(
+            `${JSON.stringify({ _tag: "Exit", requestId, exit: { _tag: "Success", value: [] } })}\n`,
+            { status: 200, headers: { "Content-Type": "application/ndjson" } },
+          )
+        }
+        return new Response("", { status: 200 })
+      })
+      try {
+        const layer = CloudStore.LiveFromBrowser({
+          origin: "http://test-origin.invalid",
+          token: () => {
+            tokenProviderCalls++
+            return "rxk_provided"
+          },
+        })
+        const full = Layer.provide(layer, EventRegistry.Live)
+        const ctx = yield* Layer.build(full)
+        const store = Context.get(ctx, EventStore)
+        yield* store.append([])
+        // session-token endpoint must NEVER be called when token is provided
+        expect(sessionTokenCalls).toBe(0)
+        // token provider must have been called at least once
+        expect(tokenProviderCalls).toBeGreaterThan(0)
+      } finally {
+        restore()
+      }
+    }).pipe(Effect.scoped),
+  )
+
+  it.effect("LiveFromBrowser token path: Authorization header uses provided token", () =>
+    Effect.gen(function* () {
+      let capturedAuth: string | undefined
+      const restore = installMockFetch(async (req) => {
+        if (req.url.includes("/rxweave/rpc/")) {
+          capturedAuth = req.headers.get("authorization") ?? undefined
+          const text = await req.text()
+          const firstLine = text.split("\n").find((l) => l.trim().length > 0) ?? ""
+          let requestId = "1"
+          try {
+            const parsed = JSON.parse(firstLine) as { id?: string }
+            if (typeof parsed.id === "string") requestId = parsed.id
+          } catch { /* keep requestId */ }
+          return new Response(
+            `${JSON.stringify({ _tag: "Exit", requestId, exit: { _tag: "Success", value: [] } })}\n`,
+            { status: 200, headers: { "Content-Type": "application/ndjson" } },
+          )
+        }
+        return new Response("", { status: 200 })
+      })
+      try {
+        const layer = CloudStore.LiveFromBrowser({
+          origin: "http://test-origin.invalid",
+          token: () => "rxk_bearer_test",
+        })
+        const full = Layer.provide(layer, EventRegistry.Live)
+        const ctx = yield* Layer.build(full)
+        const store = Context.get(ctx, EventStore)
+        yield* store.append([])
+        expect(capturedAuth).toBe("Bearer rxk_bearer_test")
+      } finally {
+        restore()
+      }
+    }).pipe(Effect.scoped),
+  )
+})
+
+describe("CloudStore — onSubscribeConnect hook", () => {
+  it.scoped("onSubscribeConnect is called before each Subscribe attempt (initial + reconnects)", () =>
+    Effect.gen(function* () {
+      const reg = yield* EventRegistry
+      let connectHookCalls = 0
+      let attempt = 0
+      const mockClient: CloudRpcClient = {
+        Append: () => Effect.succeed([]),
+        Subscribe: () => {
+          attempt++
+          if (attempt === 1) {
+            return Stream.concat(
+              Stream.fromIterable([{ _tag: "Heartbeat", at: 0 } as unknown as never]),
+              Stream.never,
+            )
+          }
+          return Stream.fail({ _tag: "NotFoundWireError", id: "x" })
+        },
+        GetById: () => Effect.die("unused"),
+        Query: () => Effect.die("unused"),
+        QueryAfter: () => Effect.die("unused"),
+      }
+      const shape = yield* makeCloudEventStore(mockClient, reg, {
+        heartbeat: { intervalMs: 1000 },
+        onSubscribeConnect: () => { connectHookCalls++ },
+      })
+      const fiber = yield* Effect.fork(
+        Stream.runCollect(shape.subscribe({ cursor: "earliest" }).pipe(Stream.take(1))),
+      )
+      // Advance past watchdog threshold (3 × 1000ms) and retry delay.
+      yield* TestClock.adjust("4100 millis")
+      yield* TestClock.adjust("1000 millis")
+      yield* Fiber.await(fiber)
+      // Hook must have been called for the initial connect AND the reconnect.
+      expect(connectHookCalls).toBeGreaterThanOrEqual(2)
+    }).pipe(Effect.provide(EventRegistry.Live)),
   )
 })

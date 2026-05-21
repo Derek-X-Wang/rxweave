@@ -265,4 +265,28 @@ describe("sessionTokenFetch", () => {
       restore()
     }
   })
+
+  test("session-token fetch uses credentials:include (cross-origin cookie fix)", async () => {
+    let capturedCredentials: RequestCredentials | undefined
+    const restore = installMockFetch(async (req) => {
+      if (req.url.endsWith("/rxweave/session-token")) {
+        capturedCredentials = req.credentials
+        return new Response(JSON.stringify({ token: "rxk_test" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        })
+      }
+      return new Response("ok", { status: 200 })
+    })
+    try {
+      const { transformClient } = sessionTokenFetch({
+        origin: "http://test",
+        tokenPath: "/rxweave/session-token",
+      })
+      await Effect.runPromiseExit(runRpcCall(transformClient))
+      expect(capturedCredentials).toBe("include")
+    } finally {
+      restore()
+    }
+  })
 })
