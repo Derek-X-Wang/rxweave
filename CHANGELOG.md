@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.5.5
+
+`rxweave init --template full` collaboration quickstart + `@rxweave/store-file` cross-process visibility, byte-exact recovery, and a `@rxweave/cli` stream-filter fix. Additive — no wire-protocol change, no breaking changes.
+
+- **`rxweave init --template full`** now scaffolds a runnable "collaboration stream skeleton" — a human posts `request.posted` via the CLI; a `bob-assistant` agent reacts with `response.posted` on the same shared log, auto-stamped `actor` + `causedBy`. The `--template full` flag was previously advertised but inert. README quickstart rewritten to use it; `scripts/smoke-quickstart.sh` proves it fresh-install end-to-end.
+- **Bug fix — `@rxweave/cli` empty filter.** An absent repeated `--types`/`--actors`/`--sources` option yields `Some([])` (not `None`) under `@effect/cli`, producing an empty-array filter that rejected *every* event. Now guarded with `length > 0`.
+- **`@rxweave/store-file` cross-process visibility.** `subscribe` only saw same-process appends, so the documented two-process flow (`rxweave dev &` then `rxweave emit`) never delivered. A byte-exact file-tail polling fiber (stat-first, offset-read, partial-line-safe) now surfaces events written by other processes.
+- **Bug fix — `@rxweave/store-file` multi-byte data loss.** Cold-start recovery computed its offset in UTF-16 code units while the file-tail used it as a precise byte offset; a recovered file ending in multi-byte UTF-8 (CJK, emoji, …) silently dropped the next appended event. Recovery and the tail now share one byte-exact line scanner (`scanLines`); the latent multi-byte `writer.truncate` mis-truncation is fixed too.
+- **Tests.** `@rxweave/cli` 36→48 (init + filter coverage); `@rxweave/store-file` 16→20 (cross-process + multi-byte CJK regression). Full suite 251+ green.
+
 ## v0.5.4
 
 WKWebView cross-origin streaming fix. Additive — no wire-protocol change, no breaking changes.

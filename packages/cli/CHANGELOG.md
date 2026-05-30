@@ -1,5 +1,25 @@
 # @rxweave/cli
 
+## 0.5.5
+
+### Patch Changes
+
+- `rxweave init --template full` + store-file cross-process visibility, byte-exact recovery, and a stream-filter fix.
+
+  - **`rxweave init --template full`** now scaffolds a runnable "collaboration stream skeleton" (a human posts `request.posted` via the CLI; a `bob-assistant` agent reacts with `response.posted` on the same shared log, auto-stamped `actor` + `causedBy`). The `--template full` flag was previously advertised but inert. README quickstart rewritten to use it; `scripts/smoke-quickstart.sh` proves it fresh-install end-to-end.
+  - **`@rxweave/cli` filter fix:** an absent repeated `--types`/`--actors`/`--sources` option yields `Some([])` (not `None`) under `@effect/cli`, producing an empty-array filter that rejected _every_ event. Now guarded.
+  - **`@rxweave/store-file` cross-process visibility:** `subscribe` only saw same-process appends, so the documented two-process flow (`rxweave dev &` then `rxweave emit`) never delivered. A byte-exact file-tail polling fiber now surfaces events written by other processes.
+  - **`@rxweave/store-file` data-loss fix:** the cold-start recovery offset was computed in UTF-16 code units while the file-tail used it as a precise byte offset — a recovered file ending in multi-byte UTF-8 silently dropped the next appended event. Recovery and the tail now share one byte-exact line scanner (`scanLines`), and the latent multi-byte `truncate` mis-truncation is fixed too.
+
+- Updated dependencies
+  - @rxweave/store-file@0.5.5
+  - @rxweave/core@0.5.5
+  - @rxweave/reactive@0.5.5
+  - @rxweave/runtime@0.5.5
+  - @rxweave/schema@0.5.5
+  - @rxweave/server@0.5.5
+  - @rxweave/store-memory@0.5.5
+
 ## 0.5.4
 
 ### Patch Changes
