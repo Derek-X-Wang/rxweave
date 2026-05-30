@@ -116,22 +116,28 @@ jobs:
           TMPDIR=$(mktemp -d)
           cd "$TMPDIR"
           printf '{"name":"rxweave-smoke","private":true}\n' > package.json
-          # npm registry propagation can lag noticeably after
-          # `changeset publish` returns. v0.5.0's run hit a propagation
-          # window > 50 s for `@rxweave/cli@0.5.0`; budget bumped to
-          # 10 × 15 s = 150 s, which a manual probe 3 min post-publish
-          # found to be the comfortable settle window.
-          for i in 1 2 3 4 5 6 7 8 9 10; do
-            if bun add "@rxweave/cli@$VERSION"; then
+          # Phase 1 — wait for npm registry propagation. `changeset publish`
+          # returning does NOT mean the version is queryable yet; propagation
+          # has lagged up to ~3 min (false-failed v0.5.0 at 50 s and v0.5.5 at
+          # 150 s). Poll the registry (cheap, no install) with a generous
+          # budget. This is a WAIT, not a gate — a slow-propagation run must
+          # not be mistaken for a broken release.
+          echo "Waiting for @rxweave/cli@$VERSION to propagate on npm..."
+          for i in $(seq 1 24); do
+            if [ "$(npm view "@rxweave/cli@$VERSION" version 2>/dev/null)" = "$VERSION" ]; then
+              echo "propagated after ~$(( (i - 1) * 15 ))s"
               break
             fi
-            if [ "$i" = "10" ]; then
-              echo "::error::bun add @rxweave/cli@$VERSION failed after 10 attempts (~150s)"
+            if [ "$i" = "24" ]; then
+              echo "::error::@rxweave/cli@$VERSION not visible on npm after 360s"
               exit 1
             fi
-            echo "attempt $i failed, retrying in 15s..."
             sleep 15
           done
+          # Phase 2 — authoritative install. The version is now queryable, so a
+          # `bun add` failure here is a REAL broken-tarball failure (e.g. a
+          # `workspace:^` ref leaked into the published tarball), not lag.
+          bun add "@rxweave/cli@$VERSION"
           ACTUAL=$(bunx rxweave --version)
           if [ "$ACTUAL" != "$VERSION" ]; then
             echo "::error::rxweave --version returned '$ACTUAL'; expected '$VERSION'"
