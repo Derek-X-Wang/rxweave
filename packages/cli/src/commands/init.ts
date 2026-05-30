@@ -152,7 +152,7 @@ export const templateDirs = (
 export const initCommand = Command.make(
   "init",
   { yes: yesOpt, template: templateOpt },
-  () =>
+  (opts) =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem
       const out = yield* Output
@@ -162,8 +162,26 @@ export const initCommand = Command.make(
         yield* out.writeError({ _tag: "AlreadyInitialized", path: configPath })
         return yield* Effect.fail(new Error("config exists"))
       }
-      yield* fs.writeFileString(configPath, CONFIG_TEMPLATE)
+      for (const dir of templateDirs(opts.template)) {
+        yield* fs.makeDirectory(dir, { recursive: true })
+      }
+      const files = templateFiles(opts.template)
+      for (const f of files) {
+        yield* fs.writeFileString(f.path, f.content)
+      }
       yield* fs.makeDirectory(".rxweave", { recursive: true })
-      yield* out.writeLine({ created: [configPath, ".rxweave/"] })
+      const created = files.map((f) => f.path).concat(".rxweave/")
+      if (opts.template === "full") {
+        yield* out.writeLine({
+          created,
+          next: [
+            "bun add @rxweave/schema @rxweave/store-file @rxweave/runtime effect",
+            "rxweave dev",
+            "rxweave emit request.posted --actor alice --payload '{\"text\":\"hello\"}'",
+          ],
+        })
+      } else {
+        yield* out.writeLine({ created })
+      }
     }),
 )
