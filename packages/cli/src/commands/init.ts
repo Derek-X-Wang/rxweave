@@ -22,6 +22,25 @@ export default defineConfig({
 })
 `
 
+export interface ScaffoldFile {
+  readonly path: string
+  readonly content: string
+}
+
+export const templateFiles = (
+  template: "minimal" | "full",
+): ReadonlyArray<ScaffoldFile> => {
+  if (template === "minimal") {
+    return [{ path: "./rxweave.config.ts", content: CONFIG_TEMPLATE }]
+  }
+  // "full" fileset is added in Task 2.
+  return [{ path: "./rxweave.config.ts", content: CONFIG_TEMPLATE }]
+}
+
+export const templateDirs = (
+  template: "minimal" | "full",
+): ReadonlyArray<string> => (template === "full" ? ["./agents"] : [])
+
 export const initCommand = Command.make(
   "init",
   { yes: yesOpt, template: templateOpt },
