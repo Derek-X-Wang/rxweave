@@ -60,6 +60,7 @@ real Claude agent (`@rxweave/llm`).
 See the cookbook for end-to-end recipes:
 - `docs/cookbook/cursor-recovery.md` — resume an agent after crash.
 - `docs/cookbook/backup-restore.md` — back up / restore a local stream file.
+- `docs/cookbook/llm-agent.md` — give a scaffolded agent a real Claude brain.
 
 ## Docs
 
