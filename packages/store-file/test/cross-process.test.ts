@@ -1,0 +1,315 @@
+/**
+ * Cross-instance visibility test.
+ *
+ * Verifies that events appended to a JSONL file by one FileStore instance
+ * (simulating another process) become visible to a SECOND FileStore instance
+ * on the same file within a bounded polling wait (~200ms interval).
+ *
+ * This exercises the tail fiber's offset-based polling introduced by the
+ * fix to commit a1f432c — specifically:
+ *  - stat early-return when file hasn't grown (no read)
+ *  - read only the new [readBytes, fileSize) tail bytes when it has
+ *  - partial-line safety (only advance past complete newline-terminated lines)
+ */
+import { describe, expect } from "vitest"
+import { it } from "@effect/vitest"
+import { Context, Duration, Effect, Fiber, Layer, Schedule, Schema, Stream } from "effect"
+import { FileSystem } from "@effect/platform"
+import { BunFileSystem } from "@effect/platform-bun"
+import { EventStore } from "@rxweave/core"
+import { EventEnvelope } from "@rxweave/schema"
+import { FileStore } from "../src/index.js"
+import type { ActorId } from "@rxweave/schema"
+
+const actor = (v: string): ActorId => v as ActorId
+const encode = Schema.encodeSync(Schema.parseJson(EventEnvelope))
+
+/**
+ * Build a FileStore.Live over a given path and yield the resolved EventStore.
+ * The store is scoped to the surrounding it.scopedLive scope.
+ */
+const buildStore = (path: string) =>
+  Effect.gen(function* () {
+    const ctx = yield* Layer.build(FileStore.Live({ path }))
+    return Context.get(ctx, EventStore)
+  })
+
+/**
+ * Retry an effect until it succeeds, with bounded retries and a delay between each.
+ * Equivalent to polling until condition is met, up to maxRetries × delayMs = total budget.
+ */
+const pollUntil = <A>(
+  check: Effect.Effect<A, string>,
+  { retries, delayMs }: { retries: number; delayMs: number },
+) =>
+  Effect.retry(
+    check,
+    Schedule.addDelay(Schedule.recurs(retries), () => Duration.millis(delayMs)),
+  )
+
+describe("cross-instance file-tail visibility", () => {
+  /**
+   * Primary cross-process simulation:
+   *  1. Open instance A on a temp file.
+   *  2. Append event-A via A (so it is on disk).
+   *  3. Open instance B on the SAME file.
+   *  4. Append event-B via A (simulates another process writing after B started).
+   *  5. Poll B.query() until event-B appears, with a 2 s timeout.
+   */
+  it.scopedLive("instance B sees events appended by instance A after B started", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const tmp = yield* fs.makeTempDirectoryScoped()
+      const path = `${tmp}/events.jsonl`
+
+      // Build instance A — this creates the file and warms the store.
+      const storeA = yield* buildStore(path)
+
+      // Append a seed event via A so the file is non-empty before B opens.
+      yield* storeA.append([
+        { type: "cross.seed", actor: actor("a"), source: "cli", payload: {} },
+      ])
+
+      // Build instance B on the SAME file — simulates a second process.
+      // B recovers the seed event from disk on boot.
+      const storeB = yield* buildStore(path)
+
+      // Verify B can already see the seed event (sanity check for recovery).
+      const seedCheck = yield* storeB.query({}, 10)
+      expect(seedCheck.length).toBe(1)
+      expect(seedCheck[0]!.type).toBe("cross.seed")
+
+      // Now append a NEW event via A AFTER B has already started.
+      // B does NOT have this in its in-memory store yet — it must discover
+      // it via the 200ms background tail fiber.
+      const appended = yield* storeA.append([
+        { type: "cross.tail", actor: actor("a"), source: "cli", payload: { seq: 1 } },
+      ])
+      const tailEventId = appended[0]!.id
+
+      // Poll B's query() until the new event appears, with a 2s budget.
+      // The poll interval in FileStore is 200ms, so ~10 cycles is plenty.
+      const found = yield* pollUntil(
+        Effect.gen(function* () {
+          const events = yield* storeB.query({}, 20)
+          const tailEvent = events.find((e) => e.id === tailEventId)
+          if (!tailEvent) return yield* Effect.fail("not yet visible")
+          return tailEvent
+        }),
+        { retries: 20, delayMs: 100 }, // up to 2s
+      )
+
+      expect(found.type).toBe("cross.tail")
+      expect(found.id).toBe(tailEventId)
+    }).pipe(Effect.provide(BunFileSystem.layer)),
+  )
+
+  /**
+   * Subscribe-based cross-instance test.
+   *
+   * Opens instance B's subscribe stream BEFORE the event is appended via A,
+   * then asserts the event appears in the stream within a bounded time.
+   * B's subscribe uses the pubsub, which is fed by the background tail fiber
+   * when a cross-process event is detected.
+   */
+  it.scopedLive("B's subscribe stream receives events appended by A after subscribe", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const tmp = yield* fs.makeTempDirectoryScoped()
+      const path = `${tmp}/events.jsonl`
+
+      const storeA = yield* buildStore(path)
+      const storeB = yield* buildStore(path)
+
+      // Start a subscriber on B listening from 'latest' (no replay).
+      // The subscriber will block until one event arrives via B's pubsub,
+      // which is fed by the 200ms tail fiber when A writes.
+      const subscribeFiber = yield* Effect.fork(
+        storeB
+          .subscribe({ cursor: "latest" })
+          .pipe(Stream.take(1), Stream.runCollect),
+      )
+
+      // Give the subscriber a moment to register before A writes.
+      yield* Effect.sleep(Duration.millis(50))
+
+      // Append via A — B's tail fiber will detect this within ~200ms and
+      // publish it to B's pubsub, unblocking the subscriber.
+      const appended = yield* storeA.append([
+        { type: "cross.subscribe", actor: actor("a"), source: "cli", payload: {} },
+      ])
+      const expectedId = appended[0]!.id
+
+      // Wait for the subscriber to collect one event, with a 2s timeout.
+      // Fiber.join re-raises if the fiber fails; we add a separate timeout
+      // to avoid hanging if the event never arrives.
+      const collected = yield* Fiber.join(subscribeFiber).pipe(
+        Effect.timeout(Duration.seconds(2)),
+      )
+
+      // Effect.timeout fails with TimeoutException on timeout — if we reach
+      // here, collected is Chunk<EventEnvelope>.
+      const events = Array.from(collected)
+      expect(events.length).toBe(1)
+      expect(events[0]!.id).toBe(expectedId)
+      expect(events[0]!.type).toBe("cross.subscribe")
+    }).pipe(Effect.provide(BunFileSystem.layer)),
+  )
+
+  /**
+   * Partial-line safety: write a complete JSON event line in two pieces —
+   * first without the trailing '\n', wait a poll cycle, then add the '\n'.
+   * Verifies:
+   *  - B does not crash or corrupt readBytes when it sees the partial
+   *  - B picks up the event once the line is complete (after the '\n' arrives)
+   */
+  it.scopedLive("B holds back a partial line and picks it up once the newline arrives", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const tmp = yield* fs.makeTempDirectoryScoped()
+      const path = `${tmp}/events.jsonl`
+
+      // Build B on an empty file.
+      const storeB = yield* buildStore(path)
+
+      // Construct a valid EventEnvelope and encode it as a JSONL line.
+      const envelope = new EventEnvelope({
+        id: "01HXC5QKZ8M9A0TN3P1Q2R4S5V" as never,
+        type: "partial.line",
+        actor: actor("external"),
+        source: "cli",
+        timestamp: Date.now(),
+        payload: {},
+      })
+      const jsonLine = encode(envelope)
+      const lineBytes = new TextEncoder().encode(jsonLine)
+
+      // Step 1: write the JSON body WITHOUT the trailing '\n'.
+      // This simulates another process mid-write on the file.
+      yield* fs.writeFile(path, lineBytes)
+
+      // Wait for at least one poll cycle.  B should see the file has grown
+      // but the new bytes have no trailing '\n' — so it defers the line.
+      yield* Effect.sleep(Duration.millis(400))
+
+      // B must still have 0 events — the partial line was correctly held back.
+      const beforeComplete = yield* storeB.query({}, 10)
+      expect(beforeComplete.length).toBe(0)
+
+      // Step 2: complete the line by appending the '\n'.
+      yield* fs.writeFile(
+        path,
+        new Uint8Array([...lineBytes, 0x0a]), // 0x0a = '\n'
+      )
+
+      // Poll B until the event appears — B's next tail poll should pick up
+      // the now-complete line starting from its last known readBytes.
+      const found = yield* pollUntil(
+        Effect.gen(function* () {
+          const events = yield* storeB.query({}, 10)
+          const ev = events.find((e) => e.id === envelope.id)
+          if (!ev) return yield* Effect.fail("not yet visible")
+          return ev
+        }),
+        { retries: 20, delayMs: 100 },
+      )
+
+      expect(found.type).toBe("partial.line")
+      expect(found.id).toBe(envelope.id)
+    }).pipe(Effect.provide(BunFileSystem.layer)),
+  )
+
+  /**
+   * Multi-byte UTF-8 data-loss regression (byte-vs-char offset desync).
+   *
+   * Repro for the silent-drop bug: when a recovered file's last line carries a
+   * multi-byte UTF-8 payload (e.g. CJK), the cold-start scanner's char-based
+   * `validBytes` seed lands LOWER than (and mid-codepoint within) the true byte
+   * offset of the file's end. Instance B seeds `readBytes` from that char-based
+   * value, so its FIRST tail poll reads the trailing bytes of the recovered line
+   * starting mid-codepoint. `TextDecoder` emits replacement chars for the partial
+   * leading codepoint; re-encoding that decoded "line" yields MORE bytes than were
+   * read, so `consumed` over-counts and `readBytes` overshoots the real file end.
+   * The NEXT appended event is then read starting a few bytes past its true start
+   * → truncated JSON → parse fails → silently dropped from B's store + subscribers.
+   *
+   * Crucially this only manifests across multiple poll cycles: an event appended
+   * within the same poll window survives the in-memory split. So we append the
+   * ASCII events ONE PER POLL CYCLE (>200ms apart, real clock) — the first one
+   * (`tail.ascii.0`) is the casualty pre-fix. With byte-exact accounting all 5
+   * must be visible.
+   */
+  it.scopedLive("B sees ALL ASCII events appended after a recovered multi-byte (CJK) line", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const tmp = yield* fs.makeTempDirectoryScoped()
+      const path = `${tmp}/events.jsonl`
+
+      // Instance A creates the file and writes a seed event whose payload is a
+      // 3×-repeated CJK string — every char is a 3-byte UTF-8 codepoint, so the
+      // byte length of the line far exceeds its String.length (char count).
+      const storeA = yield* buildStore(path)
+      yield* storeA.append([
+        {
+          type: "tail.cjk",
+          actor: actor("external"),
+          source: "cli",
+          payload: { text: "世界你好乱码漢字測試文本".repeat(3) },
+        },
+      ])
+
+      // Instance B opens the SAME file. Its cold-start recovery reads the CJK
+      // line and seeds readBytes from validBytes. (Pre-fix: char-based → short
+      // of the true byte offset, mid-codepoint.)
+      const storeB = yield* buildStore(path)
+
+      // Sanity: B recovered the CJK seed.
+      const seedCheck = yield* storeB.query({}, 10)
+      expect(seedCheck.length).toBe(1)
+      expect(seedCheck[0]!.type).toBe("tail.cjk")
+
+      // Append 5 short ASCII events via A, ONE PER POLL CYCLE. The >200ms wait
+      // between each guarantees B runs a tail poll between appends, so each
+      // event is read in its own window (the failure-triggering condition).
+      const appendedIds: Array<string> = []
+      for (let seq = 0; seq < 5; seq++) {
+        // Wait past one full poll interval (200ms) before each append so B's
+        // tail fiber polls in between. The very first wait lets B's first poll
+        // (which sees ONLY the CJK line) overshoot readBytes pre-fix.
+        yield* Effect.sleep(Duration.millis(260))
+        const appended = yield* storeA.append([
+          {
+            type: `tail.ascii.${seq}`,
+            actor: actor("a"),
+            source: "cli",
+            payload: { seq },
+          },
+        ])
+        appendedIds.push(appended[0]!.id)
+      }
+
+      // Poll B until ALL 5 ASCII events are visible, with a generous budget.
+      // Pre-fix, tail.ascii.0 NEVER appears (readBytes overshot past its start),
+      // so this poll exhausts its retries and the test fails.
+      const allVisible = yield* pollUntil(
+        Effect.gen(function* () {
+          const events = yield* storeB.query({}, 50)
+          const ids = new Set(events.map((e) => e.id))
+          const missing = appendedIds.filter((id) => !ids.has(id))
+          if (missing.length > 0) {
+            return yield* Effect.fail(`missing ${missing.length}: not yet visible`)
+          }
+          return events
+        }),
+        { retries: 30, delayMs: 100 }, // up to 3s after the last append
+      )
+
+      // Every appended ASCII event — especially tail.ascii.0 — must be present.
+      for (let seq = 0; seq < 5; seq++) {
+        const ev = allVisible.find((e) => e.id === appendedIds[seq])
+        expect(ev, `tail.ascii.${seq} should be visible`).toBeDefined()
+        expect(ev!.type).toBe(`tail.ascii.${seq}`)
+      }
+    }).pipe(Effect.provide(BunFileSystem.layer)),
+  )
+})

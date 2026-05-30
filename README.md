@@ -10,7 +10,7 @@ Today, human+agent collaboration is fragmented. Humans talk in meetings, agents 
 
 ```bash
 bun add -d @rxweave/cli
-bun add @rxweave/schema @rxweave/core @rxweave/store-file @rxweave/runtime
+bun add @rxweave/schema @rxweave/store-file @rxweave/runtime effect
 ```
 
 Requires Node 22+ or Bun 1.1+. ESM-only.
@@ -18,17 +18,23 @@ Requires Node 22+ or Bun 1.1+. ESM-only.
 ## 5-minute quickstart
 
 ```bash
-rxweave init --yes
-# define your events + agents in rxweave.config.ts
-rxweave dev
+rxweave init --template full     # scaffolds a runnable collaboration stream
+bun add @rxweave/schema @rxweave/store-file @rxweave/runtime effect
+rxweave dev &                    # supervises the bob-assistant agent
 
-# in another shell:
-rxweave emit canvas.node.created --payload '{"id":"n1","label":"Hello"}'
-rxweave stream --follow
-rxweave inspect <eventId> --ancestry
+# a teammate posts a request to the shared stream:
+rxweave emit request.posted --actor alice --payload '{"text":"summarize the auth design"}'
+
+rxweave stream                   # one shared log: alice's request + bob-assistant's response
+rxweave inspect <response-id> --ancestry   # the response, caused by alice's request
 ```
 
-See `apps/dev/` for a working example.
+`bob-assistant` is a coworker's agent. It observed the stream and replied —
+on the same log, stamped with its own `actor` and a `causedBy` link back to
+Alice's request. That is RxWeave's core: humans and their agents collaborate
+**through a shared event stream**, not by relaying prompts. The scaffold's
+`README.md` walks the demo and shows how to swap the stub responder for a
+real Claude agent (`@rxweave/llm`).
 
 ## Packages
 

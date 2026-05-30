@@ -1,5 +1,7 @@
 import {
+  Chunk,
   Clock,
+  Duration,
   Effect,
   Layer,
   PubSub,
@@ -25,6 +27,8 @@ import {
 } from "@rxweave/core"
 import { makeWriter } from "./Writer.js"
 import { scanAndRecover } from "./Recovery.js"
+
+const TAIL_POLL_INTERVAL = Duration.millis(200)
 
 const encode = Schema.encodeSync(Schema.parseJson(EventEnvelope))
 
@@ -61,6 +65,132 @@ export const FileStore = {
           yield* writer.truncate(recovered.validBytes)
         }
 
+        // Track how many bytes have been read so far for file-tail polling.
+        // Starts at `recovered.validBytes` so the next poll only reads new data.
+        const readBytes = yield* Ref.make(recovered.validBytes)
+
+        // Background fiber: poll the file every TAIL_POLL_INTERVAL for new
+        // lines written by other processes. This enables cross-process event
+        // visibility — `rxweave emit` in one shell triggers agents supervised
+        // by `rxweave dev` in another. The fiber runs for the lifetime of the
+        // store's scope.
+        //
+        // Performance: we stat first and early-return (no read) when the file
+        // hasn't grown. When it has, we read only [readBytes, fileSize) via
+        // fs.stream offset+bytesToRead — O(new bytes), not O(file size).
+        //
+        // Partial-line safety: the new bytes may end mid-line if another
+        // process is mid-write. We only consume complete newline-terminated
+        // lines. Any partial trailing bytes are left for the next poll by
+        // advancing readBytes only by the byte-length of consumed complete
+        // lines (including their trailing '\n').
+        yield* Effect.forkScoped(
+          Effect.forever(
+            Effect.sleep(TAIL_POLL_INTERVAL).pipe(
+              Effect.zipRight(
+                Effect.gen(function* () {
+                  const known = yield* Ref.get(readBytes)
+
+                  // Stat-only fast path: skip the read entirely when the file
+                  // hasn't grown. Size is a bigint-branded Size type; coerce
+                  // to number for comparison with the JS-number `known`.
+                  const info = yield* fs.stat(opts.path)
+                  const fileSize = Number(info.size)
+                  if (fileSize <= known) return
+
+                  // Read only the new tail bytes [known, fileSize).
+                  const newByteCount = fileSize - known
+                  const chunks = yield* Stream.runCollect(
+                    fs.stream(opts.path, {
+                      offset: known,
+                      bytesToRead: newByteCount,
+                    }),
+                  )
+                  // Concatenate Uint8Array chunks into one buffer.
+                  const chunkArray = Chunk.toReadonlyArray(chunks)
+                  const totalLen = chunkArray.reduce((s, c) => s + c.length, 0)
+                  const newBytes = new Uint8Array(totalLen)
+                  let pos = 0
+                  for (const c of chunkArray) {
+                    newBytes.set(c, pos)
+                    pos += c.length
+                  }
+
+                  // Only consume complete newline-terminated lines, with
+                  // BYTE-EXACT offset accounting. We split the RAW `newBytes`
+                  // on the 0x0A ('\n') byte and advance `consumed` by each
+                  // complete segment's raw byte length + 1 — never by
+                  // re-encoding the decoded string.
+                  //
+                  // Why raw bytes, not `encode(decodedLine).length`:
+                  // `readBytes` is seeded from cold-start recovery's byte
+                  // offset, but if it ever lands mid-codepoint (e.g. a legacy
+                  // char-based seed, or a writer that flushed a partial multi-
+                  // byte char), `TextDecoder` substitutes a replacement char
+                  // for the partial leading codepoint. Re-encoding that decoded
+                  // line yields MORE bytes than were actually read, so
+                  // `consumed` overshoots `readBytes` past the real file end and
+                  // the NEXT appended event is read truncated → silently
+                  // dropped. Counting the raw bytes we consumed is immune to
+                  // this: `consumed` can never exceed `newBytes.length`.
+                  //
+                  // Splitting on 0x0A is safe for UTF-8: 0x0A only appears as a
+                  // standalone newline, never as a continuation/lead byte of a
+                  // multi-byte sequence.
+                  //
+                  // - Each 0x0A marks the end of a complete line; we decode the
+                  //   bytes since the previous boundary for JSON parsing and
+                  //   advance `consumed` past them + the newline byte.
+                  // - Any trailing bytes after the last 0x0A are a partial line
+                  //   (writer mid-write) — left unconsumed for the next poll.
+                  const newEnvelopes: Array<EventEnvelope> = []
+                  let consumed = 0
+                  let lineStart = 0
+                  for (let i = 0; i < newBytes.length; i++) {
+                    if (newBytes[i] !== 0x0a) continue
+                    // Complete line: raw bytes [lineStart, i) (newline excluded).
+                    const lineBytes = newBytes.subarray(lineStart, i)
+                    const line = new TextDecoder().decode(lineBytes)
+                    const attempt = yield* Effect.either(
+                      Effect.try(() =>
+                        Schema.decodeUnknownSync(Schema.parseJson(EventEnvelope))(line),
+                      ),
+                    )
+                    if (attempt._tag === "Right") {
+                      newEnvelopes.push(attempt.right)
+                    }
+                    // Always advance past complete lines (valid or corrupt) so
+                    // corrupt lines don't block future tail reads. Byte-exact:
+                    // the raw segment length + 1 for the consumed '\n'.
+                    consumed += lineBytes.length + 1
+                    lineStart = i + 1
+                  }
+
+                  if (newEnvelopes.length === 0 && consumed === 0) return
+                  yield* lock.withPermits(1)(
+                    Effect.gen(function* () {
+                      // Only ingest events not already in our in-memory store
+                      // (guards against double-counting events this process appended).
+                      if (newEnvelopes.length > 0) {
+                        const current = yield* Ref.get(store)
+                        const currentIds = new Set(current.map((e) => e.id))
+                        const fresh = newEnvelopes.filter((e) => !currentIds.has(e.id))
+                        if (fresh.length > 0) {
+                          yield* Ref.update(store, (arr) => [...arr, ...fresh])
+                          for (const env of fresh) yield* pubsub.publish(env)
+                        }
+                      }
+                      // Advance readBytes by exactly the complete-line bytes consumed,
+                      // leaving any partial trailing line for the next poll.
+                      yield* Ref.update(readBytes, (n) => n + consumed)
+                    }),
+                  )
+                }).pipe(Effect.catchAll(() => Effect.void)),
+              ),
+            ),
+          ).pipe(Effect.catchAll(() => Effect.void)),
+        )
+
         return EventStore.of({
           append: (events) =>
             Effect.gen(function* () {
@@ -79,11 +209,18 @@ export const FileStore = {
                 })
                 envelopes.push(envelope)
               }
-              yield* writer.appendLines(envelopes.map((e) => encode(e)))
+              const lines = envelopes.map((e) => encode(e))
+              yield* writer.appendLines(lines)
+              const appendedBytes = lines.reduce(
+                (sum, l) => sum + new TextEncoder().encode(l).length + 1,
+                0,
+              )
               yield* lock.withPermits(1)(
                 Effect.gen(function* () {
                   yield* Ref.update(store, (arr) => [...arr, ...envelopes])
                   for (const env of envelopes) yield* pubsub.publish(env)
+                  // Advance readBytes so the tail fiber skips these lines.
+                  yield* Ref.update(readBytes, (n) => n + appendedBytes)
                 }),
               )
               return envelopes as ReadonlyArray<EventEnvelope>
