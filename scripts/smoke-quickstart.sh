@@ -68,15 +68,21 @@ if [ "${RXWEAVE_USE_NPM_DIST:-0}" != "1" ]; then
 fi
 
 # CLI wrappers:
-# RX_INIT: uses the LOCAL binary for `init --template full` (new template).
+# RX_INIT: runs `init` with the CLI under test. Defaults to the LOCAL binary
+#   (always carries the latest `--template full`). Override RXWEAVE_INIT_CMD
+#   with a multi-word command like "bun x rxweave" to exercise a PUBLISHED CLI.
 # RX: uses the npm-symlinked CLI in node_modules (single dep-tree, fixed dists).
-RX_INIT="${RXWEAVE_INIT_CMD:-$REPO/rxweave-bin}"
+if [ -n "${RXWEAVE_INIT_CMD:-}" ]; then
+  RX_INIT() { $RXWEAVE_INIT_CMD "$@"; }   # word-split a multi-word override
+else
+  RX_INIT() { "$REPO/rxweave-bin" "$@"; } # single path, kept quoted
+fi
 RX() { "$WORK/node_modules/.bin/rxweave" "$@"; }
 # Extract the `.id` field from a single JSON envelope line.
 extract_id() { printf '%s' "$1" | bun -e 'process.stdin.once("data",d=>process.stdout.write(JSON.parse(d.toString()).id))'; }
 # --- end install ---
 
-"$RX_INIT" init --template full
+RX_INIT init --template full
 test -f rxweave.config.ts && test -f schemas.ts && test -f agents/bob-assistant.ts
 echo "Scaffold files OK"
 
@@ -116,6 +122,10 @@ printf '%s' "$RESP" | bun -e '
 ' "$REQ_ID"
 
 RESP_ID="$(extract_id "$RESP")"
-RX inspect "$RESP_ID" --ancestry | grep -q "$REQ_ID" || { echo "ancestry missing request"; exit 1; }
+# Capture then grep, rather than `inspect | grep -q`: under `set -o pipefail`,
+# `grep -q` exits on first match and SIGPIPEs the still-writing `inspect`,
+# which the pipeline then reports as a failure (a flaky false negative).
+ANCESTRY="$(RX inspect "$RESP_ID" --ancestry)"
+printf '%s' "$ANCESTRY" | grep -q "$REQ_ID" || { echo "ancestry missing request"; exit 1; }
 
 echo "SMOKE OK"
