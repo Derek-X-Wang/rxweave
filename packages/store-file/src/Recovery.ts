@@ -9,80 +9,98 @@ export interface RecoveryResult {
   readonly validBytes: number
 }
 
-const decode = Schema.decodeUnknown(Schema.parseJson(EventEnvelope))
+export interface ScanResult {
+  readonly events: ReadonlyArray<EventEnvelope>
+  /** Complete lines that failed to decode (interior corruption — retained). */
+  readonly skipped: number
+  /**
+   * Raw byte length of all COMPLETE (newline-terminated) lines, including each
+   * trailing `\n`. A partial trailing line (no final `\n`) is NOT counted —
+   * its bytes are left for the caller to handle.
+   */
+  readonly consumed: number
+}
+
+const decodeLine = Schema.decodeUnknown(Schema.parseJson(EventEnvelope))
+
+/**
+ * The single byte-exact JSONL line scanner, shared by cold-start recovery and
+ * FileStore's live file-tail fiber so the byte-offset invariant lives in ONE
+ * place.
+ *
+ * Splits the raw `bytes` on the `0x0A` (`\n`) byte and decodes each COMPLETE
+ * line as an EventEnvelope. `consumed` counts the RAW bytes of complete lines
+ * (+1 per `\n`) — it is never derived by re-encoding a decoded string, so it
+ * can never overshoot `bytes.length` even if `bytes` happens to start
+ * mid-codepoint. (A char-based or re-encoded count would seed/advance the tail
+ * offset past the true file end and silently drop the next appended event.)
+ * Splitting on `0x0A` is safe for UTF-8: `0x0A` never appears as a continuation
+ * or lead byte of a multi-byte sequence. A partial trailing line (writer
+ * mid-write, or a torn tail) is left unconsumed.
+ */
+export const scanLines = (bytes: Uint8Array) =>
+  Effect.gen(function* () {
+    const decoder = new TextDecoder()
+    const events: Array<EventEnvelope> = []
+    let skipped = 0
+    let consumed = 0
+    let lineStart = 0
+    for (let i = 0; i < bytes.length; i++) {
+      if (bytes[i] !== 0x0a) continue
+      const lineBytes = bytes.subarray(lineStart, i)
+      const attempt = yield* Effect.either(decodeLine(decoder.decode(lineBytes)))
+      if (attempt._tag === "Right") events.push(attempt.right)
+      else skipped += 1
+      // Always advance past complete lines (valid or corrupt) so corrupt lines
+      // don't block future reads. Byte-exact: raw segment length + 1 for the `\n`.
+      consumed += lineBytes.length + 1
+      lineStart = i + 1
+    }
+    return { events, skipped, consumed } satisfies ScanResult
+  })
 
 /**
  * Cold-start scan + recovery for a JSONL event log.
  *
- * Reads the file as UTF-8 text and splits by `"\n"`. For each line we try
- * to decode it as an EventEnvelope. Three outcomes per line:
+ * Scans complete lines via the shared {@link scanLines}, then handles the
+ * trailing bytes after the last `\n` (an unterminated final line). Because cold
+ * start reads a STATIC file (no concurrent writer), we can try to decode that
+ * trailing line:
  *
- *  - Decode succeeds: append to `events`, advance `validBytes` by the line's
- *    UTF-8 byte length + 1 (the +1 accounts for the newline we split on).
- *  - Decode fails on the final line AND the file does NOT end with `\n`:
- *    torn tail. Set `truncatedBytes = raw.length - validBytes` and do NOT
- *    advance `validBytes`. FileStore will `writer.truncate(validBytes)`
- *    to chop the torn tail back to the last valid newline.
- *  - Decode fails anywhere else: interior corruption. Bump `skipped` and
- *    keep going — we still advance `validBytes` because we intentionally
- *    retain the junk line rather than rewrite the file.
+ *  - It decodes: a valid event whose trailing newline never flushed — keep it,
+ *    and `validBytes` covers the whole file (nothing to truncate).
+ *  - It does not decode: a torn tail — set `truncatedBytes = raw.length -
+ *    validBytes`; FileStore `writer.truncate(validBytes)` chops it back to the
+ *    last valid newline.
  *
- * Byte-exact offsets: `validBytes` is accumulated from each complete line's
- * UTF-8 byte length (`TextEncoder().encode(line).length`) + 1, NOT its
- * `String.length` (UTF-16 code units). The two diverge for any multi-byte
- * UTF-8 (CJK, emoji, …). A char-based count would seed FileStore's tail
- * `readBytes` LOWER than the true byte offset and mid-codepoint, causing the
- * first tail poll to over-count `consumed` and silently drop the next appended
- * event. It would also make `writer.truncate(validBytes)` chop at the wrong
- * byte for a torn multi-byte tail. Re-encoding a *complete* line is lossless
- * (the split point — the `\n` byte — is always a codepoint boundary), so this
- * exactly equals the raw byte offset of the end of the last valid line.
+ * (FileStore's live tail fiber, by contrast, uses {@link scanLines} bare: on a
+ * file being actively written, a partial trailing line must wait for its
+ * newline rather than be decoded.)
  */
 export const scanAndRecover = (path: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
     const raw = yield* fs.readFile(path)
-    const text = new TextDecoder().decode(raw)
-    if (text.length === 0) {
-      return {
-        events: [],
-        skipped: 0,
-        truncatedBytes: 0,
-        validBytes: 0,
-      } satisfies RecoveryResult
-    }
+    const scan = yield* scanLines(raw)
 
-    const endsWithNewline = text.endsWith("\n")
-    const lines = text.split("\n")
-    if (endsWithNewline) lines.pop()
-
-    const encoder = new TextEncoder()
-    const events: Array<EventEnvelope> = []
-    let skipped = 0
-    let validBytes = 0
+    const events: Array<EventEnvelope> = [...scan.events]
+    let validBytes = scan.consumed
     let truncatedBytes = 0
 
-    for (let i = 0; i < lines.length; i++) {
-      const isLast = i === lines.length - 1
-      const line = lines[i]!
-      // Byte-exact: the raw byte length of this complete line + 1 for the '\n'
-      // we split on. Equals the true file byte offset advance for this line.
-      const lineByteLen = encoder.encode(line).length
-      const attempt = yield* Effect.either(decode(line))
+    if (raw.length > scan.consumed) {
+      const trailing = new TextDecoder().decode(raw.subarray(scan.consumed))
+      const attempt = yield* Effect.either(decodeLine(trailing))
       if (attempt._tag === "Right") {
         events.push(attempt.right)
-        validBytes += lineByteLen + 1
-      } else if (isLast && !endsWithNewline) {
-        truncatedBytes = raw.length - validBytes
+        validBytes = raw.length
       } else {
-        skipped += 1
-        validBytes += lineByteLen + 1
+        truncatedBytes = raw.length - scan.consumed
       }
     }
 
     return {
       events,
-      skipped,
+      skipped: scan.skipped,
       truncatedBytes,
       validBytes,
     } satisfies RecoveryResult

@@ -26,11 +26,12 @@ import {
   SubscribeError,
 } from "@rxweave/core"
 import { makeWriter } from "./Writer.js"
-import { scanAndRecover } from "./Recovery.js"
+import { scanAndRecover, scanLines } from "./Recovery.js"
 
 const TAIL_POLL_INTERVAL = Duration.millis(200)
 
 const encode = Schema.encodeSync(Schema.parseJson(EventEnvelope))
+const textEncoder = new TextEncoder()
 
 const matchFilter = (filter: Filter | undefined) => (event: EventEnvelope): boolean => {
   if (!filter) return true
@@ -116,55 +117,12 @@ export const FileStore = {
                     pos += c.length
                   }
 
-                  // Only consume complete newline-terminated lines, with
-                  // BYTE-EXACT offset accounting. We split the RAW `newBytes`
-                  // on the 0x0A ('\n') byte and advance `consumed` by each
-                  // complete segment's raw byte length + 1 — never by
-                  // re-encoding the decoded string.
-                  //
-                  // Why raw bytes, not `encode(decodedLine).length`:
-                  // `readBytes` is seeded from cold-start recovery's byte
-                  // offset, but if it ever lands mid-codepoint (e.g. a legacy
-                  // char-based seed, or a writer that flushed a partial multi-
-                  // byte char), `TextDecoder` substitutes a replacement char
-                  // for the partial leading codepoint. Re-encoding that decoded
-                  // line yields MORE bytes than were actually read, so
-                  // `consumed` overshoots `readBytes` past the real file end and
-                  // the NEXT appended event is read truncated → silently
-                  // dropped. Counting the raw bytes we consumed is immune to
-                  // this: `consumed` can never exceed `newBytes.length`.
-                  //
-                  // Splitting on 0x0A is safe for UTF-8: 0x0A only appears as a
-                  // standalone newline, never as a continuation/lead byte of a
-                  // multi-byte sequence.
-                  //
-                  // - Each 0x0A marks the end of a complete line; we decode the
-                  //   bytes since the previous boundary for JSON parsing and
-                  //   advance `consumed` past them + the newline byte.
-                  // - Any trailing bytes after the last 0x0A are a partial line
-                  //   (writer mid-write) — left unconsumed for the next poll.
-                  const newEnvelopes: Array<EventEnvelope> = []
-                  let consumed = 0
-                  let lineStart = 0
-                  for (let i = 0; i < newBytes.length; i++) {
-                    if (newBytes[i] !== 0x0a) continue
-                    // Complete line: raw bytes [lineStart, i) (newline excluded).
-                    const lineBytes = newBytes.subarray(lineStart, i)
-                    const line = new TextDecoder().decode(lineBytes)
-                    const attempt = yield* Effect.either(
-                      Effect.try(() =>
-                        Schema.decodeUnknownSync(Schema.parseJson(EventEnvelope))(line),
-                      ),
-                    )
-                    if (attempt._tag === "Right") {
-                      newEnvelopes.push(attempt.right)
-                    }
-                    // Always advance past complete lines (valid or corrupt) so
-                    // corrupt lines don't block future tail reads. Byte-exact:
-                    // the raw segment length + 1 for the consumed '\n'.
-                    consumed += lineBytes.length + 1
-                    lineStart = i + 1
-                  }
+                  // Decode complete lines from the new tail via the shared
+                  // byte-exact scanner (see scanLines). A partial trailing line
+                  // (writer mid-write) is left unconsumed for the next poll, so
+                  // `consumed` can never overshoot the real file end.
+                  const { events: newEnvelopes, consumed } =
+                    yield* scanLines(newBytes)
 
                   if (newEnvelopes.length === 0 && consumed === 0) return
                   yield* lock.withPermits(1)(
@@ -188,7 +146,7 @@ export const FileStore = {
                 }).pipe(Effect.catchAll(() => Effect.void)),
               ),
             ),
-          ).pipe(Effect.catchAll(() => Effect.void)),
+          ),
         )
 
         return EventStore.of({
@@ -212,7 +170,7 @@ export const FileStore = {
               const lines = envelopes.map((e) => encode(e))
               yield* writer.appendLines(lines)
               const appendedBytes = lines.reduce(
-                (sum, l) => sum + new TextEncoder().encode(l).length + 1,
+                (sum, l) => sum + textEncoder.encode(l).length + 1,
                 0,
               )
               yield* lock.withPermits(1)(

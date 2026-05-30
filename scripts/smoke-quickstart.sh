@@ -72,6 +72,8 @@ fi
 # RX: uses the npm-symlinked CLI in node_modules (single dep-tree, fixed dists).
 RX_INIT="${RXWEAVE_INIT_CMD:-$REPO/rxweave-bin}"
 RX() { "$WORK/node_modules/.bin/rxweave" "$@"; }
+# Extract the `.id` field from a single JSON envelope line.
+extract_id() { printf '%s' "$1" | bun -e 'process.stdin.once("data",d=>process.stdout.write(JSON.parse(d.toString()).id))'; }
 # --- end install ---
 
 "$RX_INIT" init --template full
@@ -85,7 +87,7 @@ grep -q '"kind":"dev-ready"' dev.log || { echo "dev never ready"; cat dev.log; e
 echo "dev ready"
 
 REQ_JSON="$(RX emit request.posted --actor alice --payload '{"text":"urgent: ship it"}')"
-REQ_ID="$(printf '%s' "$REQ_JSON" | bun -e 'process.stdin.once("data",d=>process.stdout.write(JSON.parse(d.toString()).id))')"
+REQ_ID="$(extract_id "$REQ_JSON")"
 [ -n "$REQ_ID" ] || { echo "no request id: $REQ_JSON"; exit 1; }
 echo "emitted request $REQ_ID"
 
@@ -113,7 +115,7 @@ printf '%s' "$RESP" | bun -e '
   console.error("OK response", e.id, "caused by", reqId);
 ' "$REQ_ID"
 
-RESP_ID="$(printf '%s' "$RESP" | bun -e 'process.stdin.once("data",d=>process.stdout.write(JSON.parse(d.toString()).id))')"
+RESP_ID="$(extract_id "$RESP")"
 RX inspect "$RESP_ID" --ancestry | grep -q "$REQ_ID" || { echo "ancestry missing request"; exit 1; }
 
 echo "SMOKE OK"

@@ -171,17 +171,14 @@ export const initCommand = Command.make(
       }
       yield* fs.makeDirectory(".rxweave", { recursive: true })
       const created = files.map((f) => f.path).concat(".rxweave/")
+      const output: { created: ReadonlyArray<string>; next?: ReadonlyArray<string> } = { created }
       if (opts.template === "full") {
-        yield* out.writeLine({
-          created,
-          next: [
-            "bun add @rxweave/schema @rxweave/store-file @rxweave/runtime effect",
-            "rxweave dev",
-            "rxweave emit request.posted --actor alice --payload '{\"text\":\"hello\"}'",
-          ],
-        })
-      } else {
-        yield* out.writeLine({ created })
+        output.next = [
+          "bun add @rxweave/schema @rxweave/store-file @rxweave/runtime effect",
+          "rxweave dev",
+          "rxweave emit request.posted --actor alice --payload '{\"text\":\"hello\"}'",
+        ]
       }
+      yield* out.writeLine(output)
     }),
 )

@@ -6,8 +6,7 @@ import { mkdtempSync, existsSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Output } from "../src/Output.js"
-import { initCommand } from "../src/commands/init.js"
-import { templateFiles, templateDirs } from "../src/commands/init.js"
+import { initCommand, templateFiles, templateDirs } from "../src/commands/init.js"
 
 describe("templateFiles / templateDirs", () => {
   it("minimal scaffolds exactly one file: rxweave.config.ts", () => {
