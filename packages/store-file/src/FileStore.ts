@@ -1,5 +1,6 @@
 import {
   Clock,
+  Duration,
   Effect,
   Layer,
   PubSub,
@@ -61,6 +62,59 @@ export const FileStore = {
           yield* writer.truncate(recovered.validBytes)
         }
 
+        // Track how many bytes have been read so far for file-tail polling.
+        // Starts at `recovered.validBytes` so the next poll only reads new data.
+        const readBytes = yield* Ref.make(recovered.validBytes)
+
+        // Background fiber: poll the file every 200 ms for new lines written
+        // by other processes. This enables cross-process event visibility —
+        // `rxweave emit` in one shell triggers agents supervised by `rxweave dev`
+        // in another. The fiber runs for the lifetime of the store's scope.
+        const tailFiber = yield* Effect.forkScoped(
+          Effect.forever(
+            Effect.sleep(Duration.millis(200)).pipe(
+              Effect.zipRight(
+                Effect.gen(function* () {
+                  const raw = yield* fs.readFile(opts.path)
+                  const known = yield* Ref.get(readBytes)
+                  if (raw.length <= known) return
+                  const newBytes = raw.slice(known)
+                  const text = new TextDecoder().decode(newBytes)
+                  const lines = text.split("\n").filter((l) => l.length > 0)
+                  const newEnvelopes: Array<EventEnvelope> = []
+                  let consumed = known
+                  for (const line of lines) {
+                    const attempt = yield* Effect.either(
+                      Effect.try(() =>
+                        Schema.decodeUnknownSync(Schema.parseJson(EventEnvelope))(line),
+                      ),
+                    )
+                    if (attempt._tag === "Right") {
+                      newEnvelopes.push(attempt.right)
+                      consumed += new TextEncoder().encode(line).length + 1
+                    }
+                  }
+                  if (newEnvelopes.length === 0) return
+                  yield* lock.withPermits(1)(
+                    Effect.gen(function* () {
+                      // Only ingest events not already in our in-memory store
+                      // (guards against double-counting events this process appended).
+                      const current = yield* Ref.get(store)
+                      const currentIds = new Set(current.map((e) => e.id))
+                      const fresh = newEnvelopes.filter((e) => !currentIds.has(e.id))
+                      if (fresh.length === 0) return
+                      yield* Ref.update(store, (arr) => [...arr, ...fresh])
+                      for (const env of fresh) yield* pubsub.publish(env)
+                      yield* Ref.set(readBytes, consumed)
+                    }),
+                  )
+                }).pipe(Effect.catchAll(() => Effect.void)),
+              ),
+            ),
+          ).pipe(Effect.catchAll(() => Effect.void)),
+        )
+        void tailFiber
+
         return EventStore.of({
           append: (events) =>
             Effect.gen(function* () {
@@ -79,11 +133,18 @@ export const FileStore = {
                 })
                 envelopes.push(envelope)
               }
-              yield* writer.appendLines(envelopes.map((e) => encode(e)))
+              const lines = envelopes.map((e) => encode(e))
+              yield* writer.appendLines(lines)
+              const appendedBytes = lines.reduce(
+                (sum, l) => sum + new TextEncoder().encode(l).length + 1,
+                0,
+              )
               yield* lock.withPermits(1)(
                 Effect.gen(function* () {
                   yield* Ref.update(store, (arr) => [...arr, ...envelopes])
                   for (const env of envelopes) yield* pubsub.publish(env)
+                  // Advance readBytes so the tail fiber skips these lines.
+                  yield* Ref.update(readBytes, (n) => n + appendedBytes)
                 }),
               )
               return envelopes as ReadonlyArray<EventEnvelope>

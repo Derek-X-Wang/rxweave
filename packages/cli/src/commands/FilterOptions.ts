@@ -18,9 +18,9 @@ export const buildFilter = (opts: {
   const filter: {
     -readonly [K in keyof Filter]: Filter[K]
   } = {}
-  if (Option.isSome(opts.types)) filter.types = opts.types.value
-  if (Option.isSome(opts.actors)) filter.actors = opts.actors.value as unknown as ReadonlyArray<never>
-  if (Option.isSome(opts.sources)) filter.sources = opts.sources.value as unknown as ReadonlyArray<never>
+  if (Option.isSome(opts.types) && opts.types.value.length > 0) filter.types = opts.types.value
+  if (Option.isSome(opts.actors) && opts.actors.value.length > 0) filter.actors = opts.actors.value as unknown as ReadonlyArray<never>
+  if (Option.isSome(opts.sources) && opts.sources.value.length > 0) filter.sources = opts.sources.value as unknown as ReadonlyArray<never>
   if (Option.isSome(opts.since)) filter.since = opts.since.value
   return filter as Filter
 }
