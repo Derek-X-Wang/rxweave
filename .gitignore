@@ -10,3 +10,8 @@ coverage/
 *.tsbuildinfo
 bun.lockb.bak
 /rxweave-bin
+
+# build / smoke-test artifacts
+*.tgz
+*.bun-build
+tmp-smoke-*/
