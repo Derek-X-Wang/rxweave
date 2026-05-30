@@ -75,7 +75,17 @@ Workspace apps (private, not published):
 
 **Direction set 2026-05-23 (Codex `/counsel`): the next cycle is OSS adoption surface, NOT cloud internals.** Reasoning: every recent cycle (v0.5.x + cloud-v0.3.x) polished cloud SaaS internals, but RxWeave is primarily the OSS toolkit and cloud is private infra. With zero external users, the limiting constraint is *adoption*, not idle-Convex-query cost or org/billing infra. What moves a zero-user project forward is getting one real outside-user-shaped workflow to succeed end-to-end. Codex explicitly pushed back on making "native streaming" (the HANDOFF-blessed "biggest lever") the next move — it optimizes for subscribers that don't exist, and its Convex-platform feasibility is unknown (would need a spike, see below).
 
-1. **OSS adoption cycle (the chosen next work).** Reference app polish + cookbook + a "from zero to event-sourced agent" quickstart + deployable examples. Make cloud *optional, not central* in the story. Goal: one outside-user-shaped workflow succeeds top-to-bottom on the local stack alone.
+1. **OSS adoption cycle (in progress).** Goal: one outside-user-shaped workflow succeeds top-to-bottom on the local stack alone, cloud optional.
+
+   **Rung 1 implemented on branch `feat/init-template-full`** (brainstormed + planned: `docs/superpowers/specs/2026-05-30-oss-adoption-quickstart-design.md`, `docs/superpowers/plans/2026-05-30-oss-adoption-quickstart.md`). `rxweave init --template full` now scaffolds a runnable "collaboration stream skeleton": a human (`alice`, via CLI) posts `request.posted`; a coworker's stub agent (`bob-assistant`) reacts with `response.posted` on the same shared log, auto-stamped `actor` + `causedBy`. README quickstart rewritten to use it. `scripts/smoke-quickstart.sh` proves it fresh-install end-to-end. Reflects the project's actual soul (multi-human/multi-agent collaboration, kill prompt-passing) — author's framing, not the earlier triage demo.
+
+   **Scope expanded beyond docs/CLI — the smoke surfaced two real, pre-existing defects** (this is the smoke doing its job): (a) `@rxweave/cli` `buildFilter` set an empty-array filter from an absent repeated option (`@effect/cli` yields `Some([])` not `None`), which rejected *every* event — fixed + unit-tested; (b) `@rxweave/store-file` `subscribe` only saw same-process appends, so the documented two-process quickstart (`rxweave dev &` then `rxweave emit`) never worked — fixed with a byte-exact file-tail polling fiber (offset read, stat-first, partial-line-safe). An opus review then caught a **Critical silent data-loss bug** in the tail (char-vs-byte offset desync vs `Recovery.ts`'s UTF-16 `validBytes`) — fixed by making both recovery and the tail byte-exact (also retires the latent multi-byte `truncate` mis-truncation TODO). All 251+ tests + the new cross-process/multi-byte/filter tests green.
+
+   **Carry-forward:**
+   - **Merge + release decision.** Branch not merged. The store-file + cli fixes need a **v0.5.5 patch release** before `scripts/smoke-quickstart.sh` can run clean against npm (it currently `cp`s local `dist/` over an npm install as an interim — documented in the script header).
+   - **Rung 2** — swap `bob-assistant`'s stub `reply()` for a real Claude agent via `@rxweave/llm`'s `defineLlmAgent` (the README ladder points at this).
+   - **Browsable `examples/` copy** — commit the generated `init --template full` output as `examples/collaboration-stream/` for GitHub browsing (the deferred "option C").
+   - Minor: a flaky `EPIPE` in the smoke's `inspect --ancestry` step (a `bun -e` pipe reader closing early) — re-run passes; worth a look if it recurs in CI.
 
 ### Lower priority / deferred (in Codex's recommended sequence after adoption)
 
