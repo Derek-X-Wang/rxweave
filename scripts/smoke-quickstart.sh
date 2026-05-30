@@ -89,15 +89,16 @@ REQ_ID="$(printf '%s' "$REQ_JSON" | bun -e 'process.stdin.once("data",d=>process
 [ -n "$REQ_ID" ] || { echo "no request id: $REQ_JSON"; exit 1; }
 echo "emitted request $REQ_ID"
 
-# Give bob-assistant time to observe and respond via the file-tail poller.
-sleep 1
-
-# Use --last 100 (snapshot mode) so the stream command exits after reading
-# all existing events. Plain `rxweave stream` enters live-subscription mode
-# and never exits.
-STREAM="$(RX stream --last 100)"
-RESP="$(printf '%s\n' "$STREAM" | grep '"type":"response.posted"' | tail -1)"
-[ -n "$RESP" ] || { echo "no response.posted in stream"; echo "$STREAM"; exit 1; }
+# Poll for the response.posted event. The file-tail fiber (200ms interval)
+# injects new events from the emit process; the agent processes them and
+# writes the response. Allow up to 10s for the full round-trip.
+for i in $(seq 1 50); do
+  STREAM="$(RX stream --last 100)"
+  RESP="$(printf '%s\n' "$STREAM" | grep '"type":"response.posted"' | tail -1)"
+  [ -n "$RESP" ] && break
+  sleep 0.2
+done
+[ -n "$RESP" ] || { echo "no response.posted after 10s"; echo "$STREAM"; exit 1; }
 
 printf '%s' "$RESP" | bun -e '
   const e = JSON.parse(require("fs").readFileSync(0, "utf8"));
