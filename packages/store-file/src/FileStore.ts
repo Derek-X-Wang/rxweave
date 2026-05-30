@@ -84,7 +84,7 @@ export const FileStore = {
         // lines. Any partial trailing bytes are left for the next poll by
         // advancing readBytes only by the byte-length of consumed complete
         // lines (including their trailing '\n').
-        const tailFiber = yield* Effect.forkScoped(
+        yield* Effect.forkScoped(
           Effect.forever(
             Effect.sleep(TAIL_POLL_INTERVAL).pipe(
               Effect.zipRight(
@@ -116,25 +116,41 @@ export const FileStore = {
                     pos += c.length
                   }
 
-                  // Only consume complete newline-terminated lines.
-                  // If the tail ends with a partial line, leave those bytes
-                  // for the next poll by not advancing readBytes past them.
+                  // Only consume complete newline-terminated lines, with
+                  // BYTE-EXACT offset accounting. We split the RAW `newBytes`
+                  // on the 0x0A ('\n') byte and advance `consumed` by each
+                  // complete segment's raw byte length + 1 — never by
+                  // re-encoding the decoded string.
                   //
-                  // text.split("\n") always produces at least one segment.
-                  // - If newBytes ends with '\n': the last segment is "" (empty,
-                  //   from the trailing newline) — drop it; all preceding
-                  //   segments are complete lines.
-                  // - If newBytes does NOT end with '\n': the last segment is a
-                  //   partial line — drop it too; we'll pick it up next poll
-                  //   once the writer has finished it.
-                  // In both cases: slice off the last segment.
-                  const text = new TextDecoder().decode(newBytes)
-                  const completeLines = text.split("\n").slice(0, -1)
-
+                  // Why raw bytes, not `encode(decodedLine).length`:
+                  // `readBytes` is seeded from cold-start recovery's byte
+                  // offset, but if it ever lands mid-codepoint (e.g. a legacy
+                  // char-based seed, or a writer that flushed a partial multi-
+                  // byte char), `TextDecoder` substitutes a replacement char
+                  // for the partial leading codepoint. Re-encoding that decoded
+                  // line yields MORE bytes than were actually read, so
+                  // `consumed` overshoots `readBytes` past the real file end and
+                  // the NEXT appended event is read truncated → silently
+                  // dropped. Counting the raw bytes we consumed is immune to
+                  // this: `consumed` can never exceed `newBytes.length`.
+                  //
+                  // Splitting on 0x0A is safe for UTF-8: 0x0A only appears as a
+                  // standalone newline, never as a continuation/lead byte of a
+                  // multi-byte sequence.
+                  //
+                  // - Each 0x0A marks the end of a complete line; we decode the
+                  //   bytes since the previous boundary for JSON parsing and
+                  //   advance `consumed` past them + the newline byte.
+                  // - Any trailing bytes after the last 0x0A are a partial line
+                  //   (writer mid-write) — left unconsumed for the next poll.
                   const newEnvelopes: Array<EventEnvelope> = []
                   let consumed = 0
-                  for (const line of completeLines) {
-                    const lineBytes = new TextEncoder().encode(line).length
+                  let lineStart = 0
+                  for (let i = 0; i < newBytes.length; i++) {
+                    if (newBytes[i] !== 0x0a) continue
+                    // Complete line: raw bytes [lineStart, i) (newline excluded).
+                    const lineBytes = newBytes.subarray(lineStart, i)
+                    const line = new TextDecoder().decode(lineBytes)
                     const attempt = yield* Effect.either(
                       Effect.try(() =>
                         Schema.decodeUnknownSync(Schema.parseJson(EventEnvelope))(line),
@@ -143,9 +159,11 @@ export const FileStore = {
                     if (attempt._tag === "Right") {
                       newEnvelopes.push(attempt.right)
                     }
-                    // Always advance past complete lines (valid or corrupt)
-                    // so corrupt lines don't block future tail reads.
-                    consumed += lineBytes + 1 // +1 for the '\n'
+                    // Always advance past complete lines (valid or corrupt) so
+                    // corrupt lines don't block future tail reads. Byte-exact:
+                    // the raw segment length + 1 for the consumed '\n'.
+                    consumed += lineBytes.length + 1
+                    lineStart = i + 1
                   }
 
                   if (newEnvelopes.length === 0 && consumed === 0) return
@@ -172,7 +190,6 @@ export const FileStore = {
             ),
           ).pipe(Effect.catchAll(() => Effect.void)),
         )
-        void tailFiber
 
         return EventStore.of({
           append: (events) =>

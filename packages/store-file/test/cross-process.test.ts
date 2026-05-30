@@ -218,4 +218,98 @@ describe("cross-instance file-tail visibility", () => {
       expect(found.id).toBe(envelope.id)
     }).pipe(Effect.provide(BunFileSystem.layer)),
   )
+
+  /**
+   * Multi-byte UTF-8 data-loss regression (byte-vs-char offset desync).
+   *
+   * Repro for the silent-drop bug: when a recovered file's last line carries a
+   * multi-byte UTF-8 payload (e.g. CJK), the cold-start scanner's char-based
+   * `validBytes` seed lands LOWER than (and mid-codepoint within) the true byte
+   * offset of the file's end. Instance B seeds `readBytes` from that char-based
+   * value, so its FIRST tail poll reads the trailing bytes of the recovered line
+   * starting mid-codepoint. `TextDecoder` emits replacement chars for the partial
+   * leading codepoint; re-encoding that decoded "line" yields MORE bytes than were
+   * read, so `consumed` over-counts and `readBytes` overshoots the real file end.
+   * The NEXT appended event is then read starting a few bytes past its true start
+   * → truncated JSON → parse fails → silently dropped from B's store + subscribers.
+   *
+   * Crucially this only manifests across multiple poll cycles: an event appended
+   * within the same poll window survives the in-memory split. So we append the
+   * ASCII events ONE PER POLL CYCLE (>200ms apart, real clock) — the first one
+   * (`tail.ascii.0`) is the casualty pre-fix. With byte-exact accounting all 5
+   * must be visible.
+   */
+  it.scopedLive("B sees ALL ASCII events appended after a recovered multi-byte (CJK) line", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const tmp = yield* fs.makeTempDirectoryScoped()
+      const path = `${tmp}/events.jsonl`
+
+      // Instance A creates the file and writes a seed event whose payload is a
+      // 3×-repeated CJK string — every char is a 3-byte UTF-8 codepoint, so the
+      // byte length of the line far exceeds its String.length (char count).
+      const storeA = yield* buildStore(path)
+      yield* storeA.append([
+        {
+          type: "tail.cjk",
+          actor: actor("external"),
+          source: "cli",
+          payload: { text: "世界你好乱码漢字測試文本".repeat(3) },
+        },
+      ])
+
+      // Instance B opens the SAME file. Its cold-start recovery reads the CJK
+      // line and seeds readBytes from validBytes. (Pre-fix: char-based → short
+      // of the true byte offset, mid-codepoint.)
+      const storeB = yield* buildStore(path)
+
+      // Sanity: B recovered the CJK seed.
+      const seedCheck = yield* storeB.query({}, 10)
+      expect(seedCheck.length).toBe(1)
+      expect(seedCheck[0]!.type).toBe("tail.cjk")
+
+      // Append 5 short ASCII events via A, ONE PER POLL CYCLE. The >200ms wait
+      // between each guarantees B runs a tail poll between appends, so each
+      // event is read in its own window (the failure-triggering condition).
+      const appendedIds: Array<string> = []
+      for (let seq = 0; seq < 5; seq++) {
+        // Wait past one full poll interval (200ms) before each append so B's
+        // tail fiber polls in between. The very first wait lets B's first poll
+        // (which sees ONLY the CJK line) overshoot readBytes pre-fix.
+        yield* Effect.sleep(Duration.millis(260))
+        const appended = yield* storeA.append([
+          {
+            type: `tail.ascii.${seq}`,
+            actor: actor("a"),
+            source: "cli",
+            payload: { seq },
+          },
+        ])
+        appendedIds.push(appended[0]!.id)
+      }
+
+      // Poll B until ALL 5 ASCII events are visible, with a generous budget.
+      // Pre-fix, tail.ascii.0 NEVER appears (readBytes overshot past its start),
+      // so this poll exhausts its retries and the test fails.
+      const allVisible = yield* pollUntil(
+        Effect.gen(function* () {
+          const events = yield* storeB.query({}, 50)
+          const ids = new Set(events.map((e) => e.id))
+          const missing = appendedIds.filter((id) => !ids.has(id))
+          if (missing.length > 0) {
+            return yield* Effect.fail(`missing ${missing.length}: not yet visible`)
+          }
+          return events
+        }),
+        { retries: 30, delayMs: 100 }, // up to 3s after the last append
+      )
+
+      // Every appended ASCII event — especially tail.ascii.0 — must be present.
+      for (let seq = 0; seq < 5; seq++) {
+        const ev = allVisible.find((e) => e.id === appendedIds[seq])
+        expect(ev, `tail.ascii.${seq} should be visible`).toBeDefined()
+        expect(ev!.type).toBe(`tail.ascii.${seq}`)
+      }
+    }).pipe(Effect.provide(BunFileSystem.layer)),
+  )
 })
