@@ -98,4 +98,42 @@ describe("walkLineage", () => {
       expect(chain[0]!.id).toBe("e2")
     }),
   )
+
+  it.effect("terminates cleanly on self-cycle (e1.causedBy=[e1]) — no duplicates", () =>
+    Effect.sync(() => {
+      // A self-loop: e1 claims its own id as its causal ancestor.
+      // walkLineage must stop after adding e1 once, not loop forever.
+      const log = pushEvent([], makeEnvelope("e1", ["e1"]))
+      const chain = walkLineage(log, "e1")
+      // e1 appears exactly once — cycle detected, walk terminates.
+      expect(chain.length).toBe(1)
+      expect(chain[0]!.id).toBe("e1")
+      // No duplicate ids in the result.
+      const ids = chain.map((e) => e.id)
+      expect(new Set(ids).size).toBe(ids.length)
+    }),
+  )
+
+  it.effect("terminates cleanly on mutual cycle (e1→e2→e1) — no duplicates", () =>
+    Effect.sync(() => {
+      // Mutual cycle: e1 caused e2, e2 caused e1.
+      let log = pushEvent([], makeEnvelope("e1"))
+      log = pushEvent(log, makeEnvelope("e2", ["e1"]))
+      // Artificially patch e1's causedBy to point at e2 by rebuilding:
+      // We can't modify the immutable entry, so instead test from e2's
+      // perspective where the cycle is e2→e1→(e1 already visited).
+      // e2 causedBy e1, e1 has no further causedBy → chain is [e2, e1].
+      // For a true mutual cycle we need both entries pointing at each other.
+      // Rebuild with causedBy set on both:
+      let log2: ReadonlyArray<ReturnType<typeof pushEvent>[number]> = []
+      log2 = pushEvent(log2, makeEnvelope("a", ["b"]))
+      log2 = pushEvent(log2, makeEnvelope("b", ["a"]))
+      // Walk from "a": a→b→(a already visited) → stops.
+      const chain = walkLineage(log2, "a", 10)
+      expect(chain.map((e) => e.id)).toEqual(["a", "b"])
+      // No duplicate ids.
+      const ids = chain.map((e) => e.id)
+      expect(new Set(ids).size).toBe(ids.length)
+    }),
+  )
 })

@@ -87,11 +87,11 @@ export function RxweaveBridge({ editor, onEvent }: RxweaveBridgeProps) {
     // Per-shape debounce for upserts — a typed label ("F", "Fe",
     // "Fea", …) collapses into a single "settled" event at the end
     // of the typing burst so the suggester agent doesn't fire once
-    // per keystroke. Deletes flush any pending upsert for the same id
-    // before appending the delete, so a "type-then-immediately-delete"
-    // sequence can't leak a stale upsert after the removal. The
-    // React cleanup reads `event` off each entry to flush in-flight
-    // bursts before the runtime disposes.
+    // per keystroke. Deletes cancel any pending upsert for the same id
+    // (clearTimeout + map delete) before appending the delete, so a
+    // "type-then-immediately-delete" sequence can't leak a stale
+    // upsert after the removal. The React cleanup reads `event` off
+    // each entry to flush in-flight bursts before the runtime disposes.
     type PendingEvent = { type: string; payload: unknown }
     const pending = new Map<string, { timer: number; event: PendingEvent }>()
 
