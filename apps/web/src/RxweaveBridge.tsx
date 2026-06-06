@@ -1,9 +1,10 @@
-import { useEffect } from "react"
+import { useCallback, useEffect } from "react"
 import { Cause, Effect, Layer, ManagedRuntime, Stream } from "effect"
 import type { Editor, TLRecord } from "tldraw"
 import { EventStore } from "@rxweave/core"
 import { EventRegistry, type EventDefWire } from "@rxweave/schema"
 import { CloudStore, syncRegistry, type RegistryRpcClient } from "@rxweave/store-cloud"
+import { isHeartbeat } from "@rxweave/protocol"
 import {
   CANVAS_SCHEMAS,
   CanvasBindingDeleted,
@@ -11,6 +12,8 @@ import {
   CanvasShapeDeleted,
   CanvasShapeUpserted,
 } from "./shared/schemas.js"
+import { resolveRoomConfig } from "./roomToken.js"
+import type { LoggedEvent } from "./EventLog.js"
 
 // Bidirectional adapter between tldraw's store and RxWeave's event log.
 //
@@ -28,13 +31,51 @@ import {
 //   source='remote', so our outgoing listener ignores them — no sync
 //   loop, no duplicate appends.
 //
-// Registry digest: in cloud mode (VITE_RXWEAVE_TOKEN set), the server starts
+// Registry digest: in cloud/hash-room mode (token set), the server starts
 // with an empty registry. The bridge pushes its local schemas on startup via
 // a fetch-based RegistryRpcClient shim + `syncRegistry` so Append's digest
 // gate passes. In embedded mode the embedded server pre-registers the same
 // canvas schemas, so no push is needed.
+//
+// Room token: resolved from the URL hash `#room=<token>` first, falling
+// back to `VITE_RXWEAVE_TOKEN` for local dev. Hash values are NEVER
+// sent to any server (client-only per HTTP spec). See roomToken.ts for
+// the resolution contract.
 
-export function RxweaveBridge({ editor }: { editor: Editor }) {
+// Resolve room config once at module-load time. The result is kept in
+// memory only — never written to localStorage or the bundle.
+//
+// ⚠ SECURITY NOTE: the room token grants full read+write to the shared
+// stream. Anyone with the link is in the room. Acceptable for a first
+// dogfood among trusted people — revocable/scoped invites are a
+// deferred follow-up.
+const ROOM_CONFIG = resolveRoomConfig(
+  typeof window !== "undefined" ? window.location.hash : "",
+  (import.meta as any).env?.VITE_RXWEAVE_TOKEN as string | undefined,
+  (import.meta as any).env?.VITE_RXWEAVE_ORIGIN as string | undefined,
+  typeof window !== "undefined" ? window.location.origin : "http://localhost:5173",
+)
+
+// Per-shape debounce for upserts: reduced from 2000ms to 350ms so
+// "draw on A, see on B" feels live. 350ms still collapses a typing
+// burst (e.g., "F", "Fe", "Fea", "Feat") into a single settled event
+// — any keystroke gap under 350ms gets swallowed. The old 2000ms was
+// conservative (aimed at the LLM suggester's cost budget); that agent
+// uses `actor !== "human"` to gate anyway, so this is safe to reduce.
+export const DEBOUNCE_MS = 350
+
+export interface RxweaveBridgeProps {
+  editor: Editor
+  onEvent?: (event: LoggedEvent) => void
+}
+
+export function RxweaveBridge({ editor, onEvent }: RxweaveBridgeProps) {
+  const stableOnEvent = useCallback(
+    (event: LoggedEvent) => onEvent?.(event),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  )
+
   useEffect(() => {
     let disposed = false
     let runtime: ManagedRuntime.ManagedRuntime<
@@ -51,7 +92,6 @@ export function RxweaveBridge({ editor }: { editor: Editor }) {
     // sequence can't leak a stale upsert after the removal. The
     // React cleanup reads `event` off each entry to flush in-flight
     // bursts before the runtime disposes.
-    const DEBOUNCE_MS = 2000
     type PendingEvent = { type: string; payload: unknown }
     const pending = new Map<string, { timer: number; event: PendingEvent }>()
 
@@ -104,24 +144,33 @@ export function RxweaveBridge({ editor }: { editor: Editor }) {
     // so React's StrictMode remount doesn't leak a dangling runtime.
     //
     // `CloudStore.LiveFromBrowser` handles the session-token fetch (with
-    // 401-retry), the RPC URL derivation, heartbeat (15 s default), and
-    // the two-phase drain (QueryAfter pages through history, then the
-    // live-tail stream opens from the last-drained cursor). Both drain
-    // and reconnect live inside the factory — the bridge no longer needs
-    // to manage cursors or retry loops.
+    // 401-retry), the RPC URL derivation, heartbeat, and the two-phase
+    // drain (QueryAfter pages through history, then the live-tail stream
+    // opens from the last-drained cursor). Both drain and reconnect live
+    // inside the factory — the bridge no longer needs to manage cursors
+    // or retry loops.
+    //
+    // Heartbeat intervalMs is set to 1000ms (the minimum honored by the
+    // server — see clampIntervalMs in @rxweave/protocol) so the watchdog
+    // detects a dead connection within ~3s instead of the default 45s.
+    // This reduces "draw on A, see on B" round-trip lag by cutting the
+    // server→client poll cadence from 15s to ~1s.
     //
     // `Layer.provideMerge` composes the store layer so the output
     // exports both `EventStore` + `EventRegistry` with zero remaining
     // requirements — what `ManagedRuntime.make` needs. `Layer.merge`
     // would have kept `EventRegistry` in the requirement channel.
     ;(async () => {
-      const origin = (import.meta as any).env?.VITE_RXWEAVE_ORIGIN ?? window.location.origin
-      const apiToken = (import.meta as any).env?.VITE_RXWEAVE_TOKEN as string | undefined
+      const { origin, token: apiToken } = ROOM_CONFIG
+      if (ROOM_CONFIG.fromHash) {
+        console.log("[web] shared-room mode: token from #room= hash")
+      }
 
-      // In cloud mode (apiToken set), the server starts with an empty registry.
-      // The bridge registers canvas schemas locally but must push them to the
-      // server so Append's digest gate passes. Build a minimal fetch-based
-      // RegistryRpcClient shim for syncRegistry (bypasses @effect/rpc entirely).
+      // In cloud/hash-room mode (apiToken set), the server starts with an
+      // empty registry. The bridge registers canvas schemas locally but
+      // must push them to the server so Append's digest gate passes.
+      // Build a minimal fetch-based RegistryRpcClient shim for syncRegistry
+      // (bypasses @effect/rpc entirely).
       const rpcUrl = `${origin}/rxweave/rpc/`
       const authHdr = apiToken ? { authorization: `Bearer ${apiToken}` } : {}
       const registryClient: RegistryRpcClient = {
@@ -153,10 +202,20 @@ export function RxweaveBridge({ editor }: { editor: Editor }) {
       }
 
       const layer = apiToken
-        ? CloudStore.Live({ url: `${origin}/rxweave/rpc/`, token: () => apiToken }).pipe(
-            Layer.provideMerge(EventRegistry.Live),
-          )
-        : CloudStore.LiveFromBrowser({ origin }).pipe(Layer.provideMerge(EventRegistry.Live))
+        ? CloudStore.Live({
+            url: rpcUrl,
+            token: () => apiToken,
+            // Fast heartbeat: 1000ms interval makes the server emit a
+            // keep-alive byte every ~1s so live events unblock from the
+            // stream instead of waiting for the default 15s sentinel.
+            // The server clamps to [1000, 300_000] ms — 1000 is the minimum.
+            heartbeat: { intervalMs: 1000 },
+          }).pipe(Layer.provideMerge(EventRegistry.Live))
+        : CloudStore.LiveFromBrowser({
+            origin,
+            // Fast heartbeat for the embedded-server path too.
+            heartbeat: { intervalMs: 1000 },
+          }).pipe(Layer.provideMerge(EventRegistry.Live))
       runtime = ManagedRuntime.make(layer)
 
       // Local registry registration — mirrors server-side startup so
@@ -171,8 +230,9 @@ export function RxweaveBridge({ editor }: { editor: Editor }) {
             // registry inside a single page load.
             yield* reg.registerAll(CANVAS_SCHEMAS, { swallowDuplicates: true })
             if (apiToken) {
-              // Cloud mode: server registry starts empty. Push canvas schemas
-              // so Append's digest gate passes without a registry-out-of-date error.
+              // Cloud/hash-room mode: server registry starts empty. Push
+              // canvas schemas so Append's digest gate passes without a
+              // registry-out-of-date error.
               yield* syncRegistry(registryClient)
             }
           }),
@@ -215,18 +275,40 @@ export function RxweaveBridge({ editor }: { editor: Editor }) {
         { source: "user", scope: "document" },
       )
 
-      // Incoming: `store.subscribe({ cursor: "earliest" })` — the factory's
+      // Incoming: `store.subscribe({ cursor: 'earliest' })` — the factory's
       // built-in drainBeforeSubscribe option pages through history via
       // QueryAfter before opening the live tail, so the stream delivers
       // fully ordered events without the WebKit fetch-buffer stall.
       // Reconnect on transient errors is also handled inside the factory
       // via Stream.retry with exponential backoff.
+      //
+      // Every event is forwarded to both `applyIncoming` (canvas state)
+      // and the `onEvent` callback (provenance sidebar accumulator).
+      // Heartbeat sentinels are filtered out using `isHeartbeat` from
+      // `@rxweave/protocol` — they must never appear in the event list.
       runtime.runFork(
         Effect.gen(function* () {
           const store = yield* EventStore
           yield* Stream.runForEach(
             store.subscribe({ cursor: "earliest" }),
-            (event) => Effect.sync(() => { applyIncoming(editor, event) }),
+            (event) =>
+              Effect.sync(() => {
+                // isHeartbeat guard: heartbeats have already been stripped
+                // by heartbeatGuard inside CloudStore, but a belt-and-
+                // suspenders check here ensures no sentinel ever leaks
+                // into the canvas state or the provenance sidebar if a
+                // future server version changes guard placement.
+                if (isHeartbeat(event as unknown as { _tag?: string })) return
+                applyIncoming(editor, event)
+                // Accumulate into provenance sidebar via callback.
+                stableOnEvent({
+                  id: (event as any).id,
+                  type: event.type,
+                  actor: (event as any).actor ?? "unknown",
+                  causedBy: (event as any).causedBy ?? [],
+                  envelope: event as any,
+                })
+              }),
           )
         }).pipe(
           Effect.tapErrorCause((cause) =>
@@ -257,7 +339,7 @@ export function RxweaveBridge({ editor }: { editor: Editor }) {
       // in-flight `runPromise`/`runFork` is interrupted.
       if (runtime) void runtime.dispose()
     }
-  }, [editor])
+  }, [editor, stableOnEvent])
 
   return null
 }
