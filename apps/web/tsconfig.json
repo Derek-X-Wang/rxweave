@@ -10,5 +10,5 @@
     "declarationMap": false,
     "sourceMap": false
   },
-  "include": ["src/**/*", "server/**/*", "vite.config.ts"]
+  "include": ["src/**/*", "server/**/*", "test/**/*", "vite.config.ts"]
 }
