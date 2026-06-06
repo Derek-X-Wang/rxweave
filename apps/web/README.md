@@ -2,6 +2,8 @@
 
 A shared whiteboard demo built on RxWeave: every action is an event in the stream; the UI reconstructs state from the log; LLM agents can observe and contribute to the same stream.
 
+Two people can open the same URL and see one shared event stream live — canvas actions appear on both screens, and the provenance sidebar shows every event with its causal lineage.
+
 ## Run
 
 ```bash
@@ -79,8 +81,40 @@ This runs `vite build` and then `scripts/bundle-report.ts`, which walks `dist/` 
 
 Today most of the weight (~650 KB gzipped) is tldraw + React + Effect + `ai` + `@rxweave/store-cloud`'s effect-rpc client. The growth check is against the stored baseline captured in the git log for the commit that introduced this script, not against the absolute total.
 
+## Shared Room — local two-tab check
+
+The shared-room model is verified automatically by `test/sharedRoom.integration.test.ts` (two in-process subscribers against a local `@rxweave/server`). For the visual two-tab proof run the following steps:
+
+```bash
+# 1. Start the OSS server with a fixed token (skip the LLM agent to keep it simple).
+cd apps/web
+SUGGESTER_DISABLED=1 bun run dev
+# The server prints the minted token:
+#   [web] export RXWEAVE_TOKEN=rxk_<hex>
+
+# 2. Open TWO browser windows pointed at the dev server with the room token in the hash.
+#    Replace <token> with the value from the line above.
+open "http://localhost:5173/#room=<token>"
+open "http://localhost:5173/#room=<token>"
+
+# 3. Draw something in window A — it should appear in window B within ~1 second,
+#    and the provenance sidebar on both sides should show the event.
+```
+
+Expected latency: ~350ms (debounce) + ~1s (CloudStore heartbeat/poll) = ~1.3s end-to-end. Substantially faster than the previous ~2-3s (2000ms debounce + ~1s poll).
+
+**Security note:** the room token in the URL hash grants full read+write to the shared event stream. Anyone with the link is in the room. This is intentional for a first dogfood among trusted people. Revocable/scoped invites are a deferred follow-up.
+
+## Provenance sidebar
+
+A live event list appears on the right edge of the canvas showing each event's type, actor, short id, and whether it has a causal ancestor (`causedBy`). Click any event to see its lineage (up to 5 levels of causal ancestry within the in-memory log).
+
+- Heartbeat sentinels are filtered from the list.
+- The sidebar accumulates the last 500 events in memory (ring buffer).
+- Click the toggle button (`◀ / ▶`) to collapse or expand the sidebar.
+
 ## Known limitations
 
-- Single-user. Multi-user requires pointing the bridge at RxWeave Cloud instead of the local server — trivial schema-wise, needs a cloud deployment.
 - Replays everything from `earliest` on each connect. Fine up to a few thousand events; beyond that, use cursor persistence in localStorage.
 - tldraw's undo/redo acts on local state only. A future iteration could hoist undo into the event log (emit inverse events).
+- The room token in `#room=` is shared in the URL — anyone with the link gets full read+write. Scoped/revocable invites are a deferred follow-up.
