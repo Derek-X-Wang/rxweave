@@ -10,7 +10,7 @@
  * Revocable/scoped invites are a deferred follow-up.
  */
 
-import { useState } from "react"
+import { useMemo, useState } from "react"
 import type { LoggedEvent } from "./EventLog.js"
 import { walkLineage } from "./EventLog.js"
 
@@ -71,9 +71,14 @@ export function ProvenanceSidebar({ events, visible = true, onToggle }: Provenan
     setSelectedId((prev) => (prev === id ? null : id))
   }
 
-  const selectedEvent = selectedId !== null
-    ? events.find((e) => e.id === selectedId) ?? null
-    : null
+  // Memoized so selection/toggle re-renders don't redo the O(n) work —
+  // both only change when `events` (a fresh array per push) or the
+  // selection does.
+  const newestFirst = useMemo(() => [...events].reverse(), [events])
+  const selectedEvent = useMemo(
+    () => (selectedId !== null ? (events.find((e) => e.id === selectedId) ?? null) : null),
+    [events, selectedId],
+  )
 
   return (
     <div style={styles.sidebar}>
@@ -92,7 +97,7 @@ export function ProvenanceSidebar({ events, visible = true, onToggle }: Provenan
         <>
           {/* Event list — most recent first */}
           <div style={styles.list}>
-            {[...events].reverse().map((event) => (
+            {newestFirst.map((event) => (
               <div
                 key={event.id}
                 onClick={() => handleEventClick(event.id)}
