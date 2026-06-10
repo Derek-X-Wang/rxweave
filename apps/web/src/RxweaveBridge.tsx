@@ -2,8 +2,8 @@ import { useCallback, useEffect } from "react"
 import { Cause, Effect, Layer, ManagedRuntime, Stream } from "effect"
 import type { Editor, TLRecord } from "tldraw"
 import { EventStore } from "@rxweave/core"
-import { EventRegistry, type EventDefWire } from "@rxweave/schema"
-import { CloudStore, syncRegistry, type RegistryRpcClient } from "@rxweave/store-cloud"
+import { EventRegistry } from "@rxweave/schema"
+import { CloudStore, syncRegistry } from "@rxweave/store-cloud"
 import { isHeartbeat } from "@rxweave/protocol"
 import {
   CANVAS_SCHEMAS,
@@ -14,6 +14,7 @@ import {
 } from "./shared/schemas.js"
 import { resolveRoomConfig } from "./roomToken.js"
 import type { LoggedEvent } from "./EventLog.js"
+import { makeRegistryShim } from "./registryShim.js"
 
 // Bidirectional adapter between tldraw's store and RxWeave's event log.
 //
@@ -170,36 +171,12 @@ export function RxweaveBridge({ editor, onEvent }: RxweaveBridgeProps) {
       // empty registry. The bridge registers canvas schemas locally but
       // must push them to the server so Append's digest gate passes.
       // Build a minimal fetch-based RegistryRpcClient shim for syncRegistry
-      // (bypasses @effect/rpc entirely).
+      // (bypasses @effect/rpc entirely). See registryShim.ts for the id
+      // format constraint (@effect/rpc requires a bigint-parseable numeric
+      // string — "rs-diff" broke mount-time sync; "1" works everywhere).
       const rpcUrl = `${origin}/rxweave/rpc/`
       const authHdr = apiToken ? { authorization: `Bearer ${apiToken}` } : {}
-      const registryClient: RegistryRpcClient = {
-        RegistrySyncDiff: ({ clientDigest }) =>
-          Effect.tryPromise(async () => {
-            const body =
-              JSON.stringify({ _tag: "Request", id: "rs-diff", tag: "RegistrySyncDiff", payload: { clientDigest }, headers: [] }) + "\n"
-            const res = await fetch(rpcUrl, { method: "POST", headers: { "content-type": "application/ndjson", ...authHdr }, body })
-            const text = await res.text()
-            const msg = JSON.parse(text.trim().split("\n")[0]!) as { exit: { _tag: string; value?: unknown; cause?: unknown } }
-            if (msg.exit._tag !== "Success") throw new Error(JSON.stringify(msg.exit))
-            return msg.exit.value as { upToDate: boolean; missingOnClient: ReadonlyArray<EventDefWire>; missingOnServer: ReadonlyArray<string> }
-          }),
-        RegistryPush: ({ defs }) =>
-          Effect.tryPromise(async () => {
-            const body =
-              JSON.stringify({
-                _tag: "Request",
-                id: "rs-push",
-                tag: "RegistryPush",
-                payload: { defs: defs.map((d) => ({ type: d.type, version: d.version, payloadSchema: d.payloadSchema, digest: d.digest })) },
-                headers: [],
-              }) + "\n"
-            const res = await fetch(rpcUrl, { method: "POST", headers: { "content-type": "application/ndjson", ...authHdr }, body })
-            const text = await res.text()
-            const msg = JSON.parse(text.trim().split("\n")[0]!) as { exit: { _tag: string; value?: unknown; cause?: unknown } }
-            if (msg.exit._tag !== "Success") throw new Error(JSON.stringify(msg.exit))
-          }).pipe(Effect.asVoid),
-      }
+      const registryClient = makeRegistryShim(rpcUrl, authHdr)
 
       const layer = apiToken
         ? CloudStore.Live({

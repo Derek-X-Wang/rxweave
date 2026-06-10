@@ -19,10 +19,11 @@ import { Chunk, Context, Effect, Fiber, Layer, Stream } from "effect"
 import { EventRegistry, defineEvent } from "@rxweave/schema"
 import { EventStore } from "@rxweave/core"
 import { MemoryStore } from "@rxweave/store-memory"
-import { CloudStore } from "@rxweave/store-cloud"
+import { CloudStore, syncRegistry } from "@rxweave/store-cloud"
 import { startServer } from "@rxweave/server"
 import { Schema } from "effect"
 import { resolveRoomConfig } from "../src/roomToken.js"
+import { makeRegistryShim } from "../src/registryShim.js"
 
 const BEARER_TOKEN = "rxk_integration_test_token"
 
@@ -116,3 +117,93 @@ test("resolveRoomConfig: hash token is used over env token in the bridge", () =>
   expect(config.token).toBe("hash-tok")
   expect(config.fromHash).toBe(true)
 })
+
+/**
+ * Regression test for the registry-shim id format bug.
+ *
+ * The bridge's fetch-based RegistryRpcClient shim previously used non-numeric
+ * ids ("rs-diff" / "rs-push") in its NDJSON request envelopes. @effect/rpc
+ * decodes Request.id as a bigint (RequestId), so a real @rxweave/server throws
+ * "Failed to parse String to BigInt" when it receives a non-numeric id, causing
+ * the mount-time syncRegistry call to fail and both tabs to sit at "Waiting for
+ * events… 0". Convex's hand-rolled bypass tolerated arbitrary string ids, which
+ * masked the bug until the first live two-tab Chrome validation.
+ *
+ * This test exercises the shim's NDJSON envelope shape directly against a real
+ * in-process @rxweave/server and asserts:
+ *   - A shim with id "rs-diff" (non-numeric) → syncRegistry throws / rejects.
+ *   - A shim with id "1" (numeric, the fix) → syncRegistry succeeds.
+ *
+ * The existing two-subscriber test above uses CloudStore's own @effect/rpc
+ * client (which always uses numeric ids) — that's why it passed while the
+ * bridge shim was broken. This test specifically targets the shim's envelope
+ * path.
+ */
+test("registry shim: non-numeric rpc id rejects on real server (red→green regression)", async () => {
+  await Effect.scoped(
+    Effect.gen(function* () {
+      // Start a server with an EMPTY registry (no pre-registered schemas).
+      // This forces the shim to perform a real RegistrySyncDiff + RegistryPush
+      // round-trip rather than getting an upToDate:true short-circuit.
+      const handle = yield* startServer({
+        store: MemoryStore.Live,
+        port: 0,
+        host: "127.0.0.1",
+        auth: { bearer: [BEARER_TOKEN] },
+      })
+      const rpcUrl = `http://127.0.0.1:${handle.port}/rxweave/rpc/`
+      const authHdr = { authorization: `Bearer ${BEARER_TOKEN}` }
+
+      // Client registry with PingEvent pre-loaded so syncRegistry has
+      // something to push when the server reports its registry is empty.
+      const clientRegCtx = yield* Layer.build(EventRegistry.Live)
+      const clientReg = Context.get(clientRegCtx, EventRegistry)
+      yield* clientReg.register(PingEvent as never)
+
+      // RED: shim using non-numeric id "rs-diff" — @effect/rpc's bigint
+      // parse rejects it, syncRegistry must fail (Left).
+      const brokenShim = {
+        RegistrySyncDiff: ({ clientDigest }: { clientDigest: string }) =>
+          Effect.tryPromise(async () => {
+            const body =
+              JSON.stringify({ _tag: "Request", id: "rs-diff", tag: "RegistrySyncDiff", payload: { clientDigest }, headers: [] }) + "\n"
+            const res = await fetch(rpcUrl, { method: "POST", headers: { "content-type": "application/ndjson", ...authHdr }, body })
+            const text = await res.text()
+            const msg = JSON.parse(text.trim().split("\n")[0]!) as { exit: { _tag: string; value?: unknown; cause?: unknown } }
+            if (msg.exit._tag !== "Success") throw new Error(JSON.stringify(msg.exit))
+            return msg.exit.value as { upToDate: boolean; missingOnClient: ReadonlyArray<never>; missingOnServer: ReadonlyArray<string> }
+          }),
+        RegistryPush: ({ defs }: { defs: ReadonlyArray<{ type: string; version: number; payloadSchema: unknown; digest: string }> }) =>
+          Effect.tryPromise(async () => {
+            const body =
+              JSON.stringify({ _tag: "Request", id: "rs-push", tag: "RegistryPush", payload: { defs }, headers: [] }) + "\n"
+            const res = await fetch(rpcUrl, { method: "POST", headers: { "content-type": "application/ndjson", ...authHdr }, body })
+            const text = await res.text()
+            const msg = JSON.parse(text.trim().split("\n")[0]!) as { exit: { _tag: string; value?: unknown; cause?: unknown } }
+            if (msg.exit._tag !== "Success") throw new Error(JSON.stringify(msg.exit))
+          }).pipe(Effect.asVoid),
+      }
+
+      const redResult = yield* syncRegistry(brokenShim).pipe(
+        Effect.provide(Layer.succeedContext(clientRegCtx)),
+        Effect.either,
+      )
+      expect(redResult._tag).toBe("Left") // must fail — non-numeric id rejected
+
+      // GREEN: shim using numeric id "1" (the fix in makeRegistryShim).
+      // The same server, same registry state — syncRegistry must succeed.
+      const fixedShim = makeRegistryShim(rpcUrl, authHdr)
+
+      const greenResult = yield* syncRegistry(fixedShim).pipe(
+        Effect.provide(Layer.succeedContext(clientRegCtx)),
+        Effect.either,
+      )
+      expect(greenResult._tag).toBe("Right") // must succeed — numeric id accepted
+      if (greenResult._tag === "Right") {
+        // The server started with an empty registry, so after sync the diff
+        // should have pushed PingEvent (pushed >= 1).
+        expect(greenResult.right.pushed).toBeGreaterThanOrEqual(1)
+      }
+    }),
+  ).pipe(Effect.runPromise)
+}, 15_000)
