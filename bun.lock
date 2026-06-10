@@ -16,7 +16,7 @@
     },
     "apps/dev": {
       "name": "@rxweave/dev",
-      "version": "0.0.0",
+      "version": "0.5.5",
       "dependencies": {
         "@ai-sdk/anthropic": "^2.0.0",
         "@rxweave/cli": "workspace:*",
@@ -35,7 +35,7 @@
     },
     "apps/web": {
       "name": "@rxweave/app",
-      "version": "0.0.0",
+      "version": "0.5.5",
       "dependencies": {
         "@ai-sdk/anthropic": "^2.0.0",
         "@effect/platform-bun": "^0.89.0",
@@ -48,6 +48,7 @@
         "@rxweave/server": "workspace:^",
         "@rxweave/store-cloud": "workspace:^",
         "@rxweave/store-file": "workspace:^",
+        "@rxweave/store-memory": "workspace:^",
         "ai": "^5.0.0",
         "effect": "^3.21.0",
         "react": "^19.2.0",
@@ -55,19 +56,22 @@
         "tldraw": "^4.5.0",
       },
       "devDependencies": {
+        "@effect/vitest": "^0.17.0",
         "@types/bun": "1.3.12",
         "@types/node": "^22.10.0",
         "@types/react": "^19.2.0",
         "@types/react-dom": "^19.2.0",
         "@vitejs/plugin-react": "^5.0.0",
         "concurrently": "^9.0.0",
+        "oxlint": "^0.13.0",
         "typescript": "^5.5.4",
         "vite": "^7.0.0",
+        "vitest": "^2.1.0",
       },
     },
     "packages/cli": {
       "name": "@rxweave/cli",
-      "version": "0.3.0",
+      "version": "0.5.5",
       "bin": {
         "rxweave": "dist/bin/rxweave.js",
       },
@@ -94,7 +98,7 @@
     },
     "packages/core": {
       "name": "@rxweave/core",
-      "version": "0.3.0",
+      "version": "0.5.5",
       "dependencies": {
         "@rxweave/schema": "workspace:^",
         "effect": "^3.11.0",
@@ -108,7 +112,7 @@
     },
     "packages/llm": {
       "name": "@rxweave/llm",
-      "version": "0.3.0",
+      "version": "0.5.5",
       "dependencies": {
         "@rxweave/runtime": "workspace:^",
         "@rxweave/schema": "workspace:^",
@@ -127,15 +131,15 @@
     },
     "packages/protocol": {
       "name": "@rxweave/protocol",
-      "version": "0.3.0",
+      "version": "0.5.5",
       "dependencies": {
         "@effect/rpc": "^0.75.0",
+        "@rxweave/core": "workspace:^",
         "@rxweave/schema": "workspace:^",
         "effect": "^3.21.0",
       },
       "devDependencies": {
         "@effect/vitest": "^0.17.0",
-        "@rxweave/core": "workspace:^",
         "@rxweave/store-memory": "workspace:^",
         "@types/node": "^22.10.0",
         "typescript": "^5.5.4",
@@ -144,7 +148,7 @@
     },
     "packages/reactive": {
       "name": "@rxweave/reactive",
-      "version": "0.3.0",
+      "version": "0.5.5",
       "dependencies": {
         "@rxweave/schema": "workspace:^",
         "effect": "^3.11.0",
@@ -160,7 +164,7 @@
     },
     "packages/runtime": {
       "name": "@rxweave/runtime",
-      "version": "0.3.0",
+      "version": "0.5.5",
       "dependencies": {
         "@effect/platform": "^0.96.0",
         "@effect/platform-bun": "^0.89.0",
@@ -178,7 +182,7 @@
     },
     "packages/schema": {
       "name": "@rxweave/schema",
-      "version": "0.3.0",
+      "version": "0.5.5",
       "dependencies": {
         "@noble/hashes": "^2.0.0",
         "effect": "^3.11.0",
@@ -192,7 +196,7 @@
     },
     "packages/server": {
       "name": "@rxweave/server",
-      "version": "0.3.0",
+      "version": "0.5.5",
       "dependencies": {
         "@effect/platform": "^0.96.0",
         "@effect/platform-bun": "^0.89.0",
@@ -214,7 +218,7 @@
     },
     "packages/store-cloud": {
       "name": "@rxweave/store-cloud",
-      "version": "0.3.0",
+      "version": "0.5.5",
       "dependencies": {
         "@effect/platform": "^0.96.0",
         "@effect/rpc": "^0.75.0",
@@ -232,7 +236,7 @@
     },
     "packages/store-file": {
       "name": "@rxweave/store-file",
-      "version": "0.3.0",
+      "version": "0.5.5",
       "dependencies": {
         "@effect/platform": "^0.96.0",
         "@effect/platform-bun": "^0.89.0",
@@ -251,7 +255,7 @@
     },
     "packages/store-memory": {
       "name": "@rxweave/store-memory",
-      "version": "0.3.0",
+      "version": "0.5.5",
       "dependencies": {
         "@rxweave/core": "workspace:^",
         "@rxweave/schema": "workspace:^",
