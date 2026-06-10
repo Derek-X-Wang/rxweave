@@ -29,31 +29,25 @@ import type { EventDefWire } from "@rxweave/schema"
 import type { RegistryRpcClient } from "@rxweave/store-cloud"
 
 export function makeRegistryShim(rpcUrl: string, authHdr: Record<string, string>): RegistryRpcClient {
+  const rpcCall = <T>(tag: string, payload: unknown) =>
+    Effect.tryPromise(async () => {
+      const body = JSON.stringify({ _tag: "Request", id: "1", tag, payload, headers: [] }) + "\n"
+      const res = await fetch(rpcUrl, { method: "POST", headers: { "content-type": "application/ndjson", ...authHdr }, body })
+      const text = await res.text()
+      const msg = JSON.parse(text.trim().split("\n")[0]!) as { exit: { _tag: string; value?: unknown; cause?: unknown } }
+      if (msg.exit._tag !== "Success") throw new Error(JSON.stringify(msg.exit))
+      return msg.exit.value as T
+    })
+
   return {
     RegistrySyncDiff: ({ clientDigest }) =>
-      Effect.tryPromise(async () => {
-        const body =
-          JSON.stringify({ _tag: "Request", id: "1", tag: "RegistrySyncDiff", payload: { clientDigest }, headers: [] }) + "\n"
-        const res = await fetch(rpcUrl, { method: "POST", headers: { "content-type": "application/ndjson", ...authHdr }, body })
-        const text = await res.text()
-        const msg = JSON.parse(text.trim().split("\n")[0]!) as { exit: { _tag: string; value?: unknown; cause?: unknown } }
-        if (msg.exit._tag !== "Success") throw new Error(JSON.stringify(msg.exit))
-        return msg.exit.value as { upToDate: boolean; missingOnClient: ReadonlyArray<EventDefWire>; missingOnServer: ReadonlyArray<string> }
-      }),
+      rpcCall<{ upToDate: boolean; missingOnClient: ReadonlyArray<EventDefWire>; missingOnServer: ReadonlyArray<string> }>(
+        "RegistrySyncDiff",
+        { clientDigest },
+      ),
     RegistryPush: ({ defs }) =>
-      Effect.tryPromise(async () => {
-        const body =
-          JSON.stringify({
-            _tag: "Request",
-            id: "1",
-            tag: "RegistryPush",
-            payload: { defs: defs.map((d) => ({ type: d.type, version: d.version, payloadSchema: d.payloadSchema, digest: d.digest })) },
-            headers: [],
-          }) + "\n"
-        const res = await fetch(rpcUrl, { method: "POST", headers: { "content-type": "application/ndjson", ...authHdr }, body })
-        const text = await res.text()
-        const msg = JSON.parse(text.trim().split("\n")[0]!) as { exit: { _tag: string; value?: unknown; cause?: unknown } }
-        if (msg.exit._tag !== "Success") throw new Error(JSON.stringify(msg.exit))
+      rpcCall<void>("RegistryPush", {
+        defs: defs.map((d) => ({ type: d.type, version: d.version, payloadSchema: d.payloadSchema, digest: d.digest })),
       }).pipe(Effect.asVoid),
   }
 }
